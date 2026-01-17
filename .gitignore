@@ -1,0 +1,16 @@
+data/
+input_other/
+iupred3_out/
+disopred_results/
+clusters.csv
+final_conseneus.meme
+final_peaks.bed
+ground_data.ipynb
+matrix.txt
+merge_bed.sh
+PIF4_consensus.bed
+PIF4_consensus.fasta
+ss.py
+test.ipynb
+res/
+Regulations_in_ATRM.xlsx
