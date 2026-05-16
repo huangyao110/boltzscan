@@ -1,21 +1,4 @@
-# from DockQ.DockQ import load_PDB, run_on_all_native_interfaces
-from cropd2p.cropdock.structure import pdb_cif_convert_template
 import pandas as pd
-
-
-# def calc_dockq(pred_struct, native_struct, map_lst=['A', 'B']):
-
-#     pdb_cif_convert_template(pred_struct)
-
-#     model = load_PDB(str(pred_struct.with_suffix('.pdb')))
-#     native = load_PDB(str(native_struct))
-
-#     # native:model chain map dictionary for two interfaces
-#     chain_map = {map_lst[0]:map_lst[0], map_lst[1]:map_lst[1]}
-#     # returns a dictionary containing the results and the total DockQ score
-#     RES = run_on_all_native_interfaces(model, native, chain_map=chain_map)
-#     return pd.DataFrame(RES[0]).T
-
 
 def calc_ipsae(cif_file, pae_file, ipsae_script=None):
     import subprocess

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boltzscan"
+version = "0.1.0"
+description = "GRN inference via structural modeling of TFs and their targets"
+requires-python = ">=3.10,<3.13"
+readme = "README.md"
+authors = [{ name = "huangyao" }]
+dependencies = [
+    "biopython>=1.84",
+    "pandas>=2.0",
+    "numpy>=1.26,<2.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Required by `boltzscan cistarg` and the post-FIMO `fimo2boltz` pipeline.
+cistarg = [
+    "pymemesuite>=0.1",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+]
+
+[project.scripts]
+boltzscan = "boltzscan.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["boltzscan*"]
+# The `boltz/` subtree is a vendored, separately-installable project with its
+# own pyproject.toml; do not pick it up as a subpackage of boltzscan.
+exclude = ["boltzscan.boltz*"]

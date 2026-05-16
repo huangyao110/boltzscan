@@ -1,15 +1,14 @@
 from pathlib import Path
 import json
-from Bio import SeqIO
-import numpy as np
-from Bio.Seq import Seq
-from Bio import motifs
+from Bio import SeqIO, motifs
 from typing import List, Optional, Dict, Any
 import pandas as pd
 import logging
+import re
 from tqdm import tqdm
-from cropd2p.cropdock.a3m import read_a3m
-from Bio.SeqRecord import SeqRecord
+from concurrent.futures import ThreadPoolExecutor
+import os
+import shutil
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -131,8 +130,6 @@ def get_boltz_res(boltz_res_dir, res_type='cif'):
             res = return_boltz_res_path_v2(i)['ipsae']
             res_dct[i.name] = res
     return res_dct
-
-
 
 
 
@@ -327,80 +324,184 @@ def clean_msa_inplace(msa_path):
 # ==========================================
 # 2. 生成 Boltz FASTA 主函数 (集成严格校验逻辑)
 # ==========================================
-def to_boltz_fasta(fimo_df, save_dir, tf_seqs_dict=None, tf_msa_dct=None):
+
+def pre_process_msas(unique_msa_map):
     """
-    最终生成 Boltz 输入文件。
+    针对唯一的 MSA 列表进行清洗和读取。
+    unique_msa_map: List of (msa_path, expected_tf_seq) tuples
+    返回: dict {msa_path: clean_protein_seq or None}
+    """
+    msa_cache = {}
+    
+    # 这里也可以并行，但考虑到 MSA 文件数量通常远少于 Motif 数量，单线程通常足够
+    # 如果 TF 种类特别多 (>1000)，也可以改为并行
+    for msa_p, raw_tf_seq in tqdm(unique_msa_map, desc="Pre-processing MSAs"):
+        if not msa_p: 
+            continue
+            
+        # 1. 清洗 MSA (IO 操作)
+        is_clean_ok, clean_msg = clean_msa_inplace(msa_p)
+        if not is_clean_ok:
+            print(f"MSA Error [{msa_p}]: {clean_msg}")
+            msa_cache[msa_p] = None
+            continue
+
+        # 2. 读取序列 (IO 操作)
+        try:
+            # 只读第一条，获取纯序列
+            with open(msa_p, 'r') as f:
+                # 简单解析第一行，比 SeqIO.parse 快
+                # 假设是标准 FASTA: 第一行 >, 第二行序列(可能多行)
+                # 为了稳妥还是用 SeqIO，但只读一条
+                record = next(SeqIO.parse(f, "fasta"))
+                msa_query_seq = str(record.seq).replace('-', '').upper()
+        except Exception as e:
+            print(f"Read Error [{msa_p}]: {e}")
+            msa_cache[msa_p] = None
+            continue
+
+        # 3. 校验序列 (CPU 操作)
+        # 清洗 raw_tf_seq
+        if raw_tf_seq:
+            cleaned_tf_seq = str(raw_tf_seq).upper().strip()
+            # 移除末尾特殊字符
+            cleaned_tf_seq = re.sub(r'[\-\*X]+$', '', cleaned_tf_seq)
+            
+            if msa_query_seq != cleaned_tf_seq:
+                print(f"Mismatch [{msa_p}]: MSA({len(msa_query_seq)}) != TF({len(cleaned_tf_seq)})")
+                msa_cache[msa_p] = None # 标记为无效
+                continue
+        
+        # 校验通过
+        msa_cache[msa_p] = msa_query_seq
+        
+    return msa_cache
+
+def write_single_file(args):
+    """
+    写入单个文件的原子操作，用于线程池调用
+    """
+    save_path, content = args
+    try:
+        with open(save_path, 'w') as f:
+            f.write(content)
+        return True
+    except OSError as e:
+        logger.error(f"File write error {save_path}: {e}")
+        return False
+
+def to_boltz_fasta(fimo_df, save_dir, tf_seqs_dict=None, tf_msa_dct=None, max_workers=8):
+    """
+    高性能版 Boltz 输入生成器
     """
     INPUT_SUBDIR_NAME = 'BOLTZ_INPUT'
+    save_path = Path(save_dir) / INPUT_SUBDIR_NAME
+    save_path.mkdir(exist_ok=True, parents=True)
+
     df = fimo_df.copy()
     
-    # 数据补全
+    print("Step 1: 补全数据...")
     if 'tf_seq' not in df.columns and tf_seqs_dict:
+        # 使用 map 比 apply 快
         df['tf_seq'] = df['motif_id'].map(lambda x: str(tf_seqs_dict[x].seq) if x in tf_seqs_dict else None)
     if 'msa_path' not in df.columns and tf_msa_dct:
         df['msa_path'] = df['mid'].map(tf_msa_dct)
+
+    # 过滤掉没有 MSA 路径的数据
+    df = df.dropna(subset=['msa_path'])
+
+    print("Step 2: 集中处理 MSA (Deduplication)...")
+    # 提取唯一的 (msa_path, tf_seq) 对，避免重复处理同一个文件
+    unique_pairs = df[['msa_path', 'tf_seq']].drop_duplicates().values.tolist()
     
-    save_path = Path(save_dir) / INPUT_SUBDIR_NAME
-    save_path.mkdir(exist_ok=True, parents=True)
+    # 获得 {msa_path: valid_protein_seq} 字典
+    # 如果校验失败，值为 None
+    valid_msa_dict = pre_process_msas(unique_pairs)
     
-    success_count = 0
+    # 将清洗后的序列映射回主表
+    df['clean_protein_seq'] = df['msa_path'].map(valid_msa_dict)
     
-    for _, row in tqdm(df.iterrows(), total=len(df), desc='Generating Boltz FASTAs'):
-        msa_p = row['msa_path']
-        tf_seq = row['tf_seq']
+    # 剔除无效 MSA 的行 (None)
+    initial_len = len(df)
+    df = df.dropna(subset=['clean_protein_seq'])
+    print(f"MSA 校验完成: 保留 {len(df)}/{initial_len} 行")
+
+    if len(df) == 0:
+        return
+
+    print("Step 3: 向量化准备 DNA 序列...")
+    # 反向互补使用 str.translate (上一行已 upper, 所以只需处理 ACGTN)
+    dna_seqs = df['extracted_motif_seq'].astype(str).str.upper()
+    trans_table = str.maketrans("ACGTN", "TGCAN")
+    rev_dna_seqs = dna_seqs.str.translate(trans_table).str[::-1]
+
+    # 文件名替换非法字符 + 拼后缀
+    filenames = (
+        df['boltz_name'].astype(str).str.replace(r'[\\/*?:"<>|]', "_", regex=True)
+        + ".fasta"
+    )
+    full_paths = [str(save_path / fn) for fn in filenames]
+
+    print(f"Step 4: 并行写入 {len(df)} 个文件 (使用 {max_workers} 线程)...")
+    msa_paths = df['msa_path'].values
+    prot_seqs = df['clean_protein_seq'].values
+    dna_list = dna_seqs.values
+    rev_dna_list = rev_dna_seqs.values
+
+    def gen_tasks():
+        for path, mp, ps, d, rd in zip(full_paths, msa_paths, prot_seqs, dna_list, rev_dna_list):
+            yield (path, f">A|protein|{mp}\n{ps}\n>B|dna\n{d}\n>C|dna\n{rd}\n")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(tqdm(
+            executor.map(write_single_file, gen_tasks()),
+            total=len(df),
+            unit="file"
+        ))
+
+    print(f"完成! 成功生成 {sum(results)} 个文件。")
+
+
+def distribute_files(source_dir, save_boltz_dir, num_subdirs=100):
+    """
+    将源目录中的文件均匀分配到目标目录的子文件夹中
+    
+    参数:
+        source_dir (str): 源目录路径
+        save_boltz_dir (str): 目标目录路径
+        num_subdirs (int): 要创建的子文件夹数量，默认为100
+    """
+    # 确保目标目录存在
+    os.makedirs(save_boltz_dir, exist_ok=True)
+    
+    # 获取源目录中的所有文件
+    files = [f for f in os.listdir(source_dir) 
+             if os.path.isfile(os.path.join(source_dir, f))]
+    
+    if not files:
+        print(f"在 {source_dir} 中没有找到任何文件")
+        return
+    
+    # 计算每个子文件夹应该包含的文件数
+    files_per_dir = len(files) // num_subdirs
+    remainder = len(files) % num_subdirs
+    
+    # 创建子文件夹并分配文件
+    file_index = 0
+    for i in range(num_subdirs):
+        # 创建子文件夹
+        subdir_path = os.path.join(save_boltz_dir, f"subdir_{i:03d}")
+        os.makedirs(subdir_path, exist_ok=True)
         
-        # --- 步骤 1: 物理清洗 MSA ---
-        is_clean_ok, clean_msg = clean_msa_inplace(msa_p)
-        if not is_clean_ok:
-            print(f"Skip {row.boltz_name} due to MSA Error: {clean_msg}")
-            continue
-
-        # --- 步骤 2: 读取清洗后的 MSA 第一条序列 ---
-        try:
-            msa_records = list(SeqIO.parse(msa_p, "fasta"))
-            # 去除 Gap，获取纯蛋白质序列字符串
-            msa_query_seq = str(msa_records[0].seq).replace('-', '').upper()
-        except Exception as e:
-            print(f"Skip {row.boltz_name}: Failed to read cleaned MSA - {e}")
-            continue
-
-        # --- 步骤 3: 同样清洗 tf_seq 并进行严格布尔检查 ---
-        # 按照相同逻辑，删去 tf_seq 末尾的 '-', '*', 'X'
-        cleaned_tf_seq = str(tf_seq).upper().strip()
-        while cleaned_tf_seq and cleaned_tf_seq[-1] in ['-', '*', 'X']:
-            cleaned_tf_seq = cleaned_tf_seq[:-1]
+        # 确定当前子文件夹应该包含的文件数
+        current_files_count = files_per_dir + (1 if i < remainder else 0)
         
-        # 核心布尔检查：要求完全一致
-        if msa_query_seq != cleaned_tf_seq:
-            print(f"Skip {row.boltz_name}: Sequence mismatch! "
-                  f"MSA_query({len(msa_query_seq)}) != TF_seq({len(cleaned_tf_seq)})")
-            continue
+        # 将文件移动到子文件夹 (跨文件系统时由 shutil.move 自动 fallback 到 copy+remove)
+        for _ in range(current_files_count):
+            if file_index < len(files):
+                src_file = os.path.join(source_dir, files[file_index])
+                dst_file = os.path.join(subdir_path, files[file_index])
+                shutil.move(src_file, dst_file)
+                file_index += 1
 
-        # --- 步骤 4: 准备 DNA 并写入文件 ---
-        core_dna = str(row['core_seq']).upper()
-        rev_dna = str(Seq(core_dna).reverse_complement())
-
-        safe_fn = re.sub(r'[\\/*?:"<>|]', "_", str(row.boltz_name))
-        save_file = save_path / f'{safe_fn}.fasta'
-        
-        try:
-            with open(save_file, 'w') as f:
-                # 此时 msa_query_seq 的长度与物理 MSA 文件里的有效列数完全对齐
-                # 这将彻底解决 ipsae.py 中的 IndexError
-                f.write(f">A|protein|{msa_p}\n{msa_query_seq}\n")
-                f.write(f">B|dna\n{core_dna}\n")
-                f.write(f">C|dna\n{rev_dna}\n")
-            success_count += 1
-        except Exception as e:
-            print(f"File write error {row.boltz_name}: {e}")
-
-    print(f"\nComplete: {success_count} Boltz FASTA files generated at {save_path}")
-
-def get_core_seq(row, extend_range=5):
-    seq = row['promoter_seq']
-    s, e = row['start'], row['stop']
-    left = min(s, e) - 1 - extend_range
-    right = max(s, e) + extend_range
-    left = max(left, 0)
-    right = min(right, len(seq))
-    return seq[left:right]
+    print(f"成功将 {len(files)} 个文件分配到 {num_subdirs} 个子文件夹中")

@@ -1,8 +1,8 @@
 data/
 input_other/
-iupred3_out/
+outputs/
+output/
 disopred_results/
-clusters.csv
 final_conseneus.meme
 final_peaks.bed
 ground_data.ipynb
@@ -14,3 +14,23 @@ ss.py
 test.ipynb
 res/
 Regulations_in_ATRM.xlsx
+CLAUDE.md
+
+# Task / run artifacts
+tasks/
+boltz_results_*/
+rose_grn/
+rose_grn.tar.gz
+
+# Vendored externals (each has its own repository; install separately)
+boltzscan/boltz/
+boltzscan/cropd2p/disopred/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/

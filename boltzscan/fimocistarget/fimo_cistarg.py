@@ -22,17 +22,18 @@ class PyMEMESuiteCisTargetBuilder:
     使用pyMEMEsuite API构建cisTarget数据库
     """
     
-    def __init__(self, 
-                 fasta_file: str, 
+    def __init__(self,
+                 fasta_file: str,
                  motif_dir: str,
                  output_dir: str = './cistarg_db',
                  custom_bg: dict =None,
                  pvalue_thresh: float = 1e-4,
                  max_stored_scores: int = 500000,
-                 motif_pseudo: float = 0.1):
+                 motif_pseudo: float = 0.1,
+                 motif_filter: set = None):
         """
         初始化构建器
-        
+
         Parameters:
         -----------
         fasta_file : str
@@ -47,6 +48,9 @@ class PyMEMESuiteCisTargetBuilder:
             FIMO存储的最大得分数
         motif_pseudo : float
             Motif伪计数
+        motif_filter : set[str]
+            若提供，仅扫描 stem 在该集合中的 motif 文件 (如 {"M00063_3.00", ...})；
+            None 表示扫描目录下全部 motif。
         """
         self.fasta_file = Path(fasta_file)
         self.motif_dir = Path(motif_dir)
@@ -54,6 +58,7 @@ class PyMEMESuiteCisTargetBuilder:
         self.pvalue_thresh = pvalue_thresh
         self.max_stored_scores = max_stored_scores
         self.motif_pseudo = motif_pseudo
+        self.motif_filter = set(motif_filter) if motif_filter is not None else None
         if custom_bg is None:
             self.custom_bg = None
         else:
@@ -85,13 +90,22 @@ class PyMEMESuiteCisTargetBuilder:
         # 支持.meme和.txt
         motif_files = list(self.motif_dir.glob('*.meme'))
         motif_files.extend(self.motif_dir.glob('*.txt'))
-        
+
+        if self.motif_filter is not None:
+            before = len(motif_files)
+            motif_files = [p for p in motif_files if p.stem in self.motif_filter]
+            missing = self.motif_filter - {p.stem for p in motif_files}
+            logger.info(
+                f"motif_filter active: {len(motif_files)}/{before} motif files match "
+                f"({len(missing)} requested motifs absent from {self.motif_dir})"
+            )
+
         if len(motif_files) == 0:
             raise ValueError(f"在 {self.motif_dir} 中未找到.meme文件")
-        
+
         motif_files = sorted(motif_files)
         logger.info(f"找到 {len(motif_files)} 个motif文件")
-        
+
         return motif_files
     
     def load_sequences(self) -> List[Sequence]:

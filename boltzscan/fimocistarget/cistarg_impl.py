@@ -480,73 +480,104 @@ class GenomeBackgroundComparator:
 
 
 
-import pandas as pd
-
-def remove_redundant_intervals_per_motif(df, overlap_threshold=0.0):
+def filter_fimo_by_seq_and_overlap(df, overlap_threshold=0.0, extend_range=5):
     """
-    针对 FIMO 结果去重 (支持重叠比例阈值)：
-    逻辑：在 同一个序列(sequence_name) 且 同一个Motif(motif_id) 内部，
-          保留分数最高的；如果较低分数的区间与高分区间重叠比例超过 overlap_threshold，则剔除。
+    针对 FIMO 结果去重 (修复索引重复导致的爆炸问题 + 性能优化版)
+    """
+    print("正在初始化并重置索引...")
+    # ================= 关键修复 =================
+    # 1. 强制重置索引，确保 index 唯一 (0, 1, 2, ... N)
+    #    这能彻底解决 "越剔越多" 的问题
+    data = df.copy().reset_index(drop=True)
+    # ===========================================
+
+    # 2. 预处理：提取序列和计算坐标
+    # 使用 numpy 向量化操作加速
+    starts = np.maximum(data[['start', 'stop']].min(axis=1).values - extend_range, 0)
+    stops = np.minimum(data[['start', 'stop']].max(axis=1).values + extend_range, data['promoter_seq'].str.len().values)
+    full_seqs = data['promoter_seq'].values
     
-    参数:
-    df: FIMO结果 DataFrame
-    overlap_threshold: 0.0 ~ 1.0 (例如 0.5 代表重叠超过50%才剔除，0.0代表只要碰上就剔除)
-    """
-    # 1. 备份数据
-    data = df.copy()
+    # 列表推导式提取序列 (千万级数据下这一步比较耗时，请耐心等待)
+    try:
+        # 仅当序列列存在时执行
+        cropped_seqs = [s[start:end] for s, start, end in zip(full_seqs, starts, stops)]
+        data['extracted_motif_seq'] = cropped_seqs
+    except Exception as e:
+        print(f"序列提取出错 (可能存在空值): {e}")
+        return data
 
-    # 2. 修正坐标：确保 Start < End，并计算长度
-    # FIMO 坐标通常是包含的 (inclusive)，所以长度建议 +1 (视具体版本而定，+1更稳妥)
-    data['real_start'] = data[['start', 'stop']].min(axis=1)
-    data['real_stop'] = data[['start', 'stop']].max(axis=1)
-    data['length'] = data['real_stop'] - data['real_start'] + 1 # 计算自身长度
+    data['real_start'] = starts
+    data['real_stop'] = stops
+    data['length'] = stops - starts # 计算长度
 
-    # 3. 全局按分数降序排序 (优先级核心)
+    # 3. 按分数排序
     data = data.sort_values(by=['score'], ascending=False)
+    print(f"原始数据行数: {len(df)}")
+
+    # 4. 内容去重 (Sequence Content Filter)
+    data['tf_name'] = data['tf_name'].fillna('Unknown_TF')
+    
+    before_seq_filter = len(data)
+    # 同样加上 ignore_index=True 保持清爽，虽然不是必须
+    data = data.drop_duplicates(
+        subset=['sequence_name', 'tf_name', 'extracted_motif_seq'], 
+        keep='first'
+    )
+    print(f"剔除相同序列内容后: {len(data)} (减少 {before_seq_filter - len(data)})")
+
+    # 5. 物理重叠去重：按 (sequence_name, tf_name) 分组，每组内按 score 降序保留首个非冗余区间
+    print("正在进行物理重叠去重 (此步骤处理千万级数据较慢，请稍候)...")
 
     keep_indices = []
-
-    # 4. 按序列和Motif分组处理
-    grouped = data.groupby(['sequence_name', 'motif_id'])
-
+    grouped = data.groupby(['sequence_name', 'tf_name'], sort=False)
+    
+    # 进度条计数器
+    count = 0
+    total_groups = len(grouped)
+    
     for name, group in grouped:
-        accepted_intervals = [] # 存储已保留的区间信息：(start, stop, length)
+        # 获取该组内的 start, stop, length, original_index
+        # 转换为 numpy 矩阵: [N_rows, 4]
+        # 这里的 group 已经是按 score 降序排好的
+        g_data = group[['real_start', 'real_stop', 'length']].values
+        g_indices = group.index.values
         
-        for idx, row in group.iterrows():
-            curr_start = row['real_start']
-            curr_stop = row['real_stop']
-            curr_len = row['length']
+        accepted_intervals = [] # 存储 (start, stop)
+        
+        # 纯 Numpy/List 循环，避免 DataFrame 开销
+        for i in range(len(g_data)):
+            curr_start = g_data[i, 0]
+            curr_stop = g_data[i, 1]
+            curr_len = g_data[i, 2]
+            original_idx = g_indices[i]
             
             is_redundant = False
             
-            # 检查与“本组已保留区间”的重叠情况
+            # 检查重叠
             for (acc_start, acc_stop) in accepted_intervals:
-                # 1. 计算重叠部分的物理坐标
-                # 重叠起点 = 两个起点中的较大值
-                # 重叠终点 = 两个终点中的较小值
                 overlap_start = max(curr_start, acc_start)
                 overlap_end = min(curr_stop, acc_stop)
                 
-                # 2. 判断是否存在重叠
                 if overlap_start < overlap_end:
-                    # 计算重叠长度 (+1 是因为坐标是inclusive的)
-                    overlap_len = overlap_end - overlap_start + 1
-                    
-                    # 3. 计算重叠比例
-                    # 这里计算的是：重叠部分占“当前这个较低分区间”的比例
-                    # 也可以改成占 min(curr_len, acc_len)
+                    overlap_len = overlap_end - overlap_start
                     ratio = overlap_len / curr_len
                     
-                    # 4. 如果比例超过阈值，标记为冗余
-                    # 注意：如果 threshold 是 0，只要 overlap_len > 0 就会剔除
                     if ratio > overlap_threshold:
                         is_redundant = True
                         break
             
             if not is_redundant:
                 accepted_intervals.append((curr_start, curr_stop))
-                keep_indices.append(idx)
+                keep_indices.append(original_idx)
+        
+        # 简单的进度打印
+        count += 1
+        if count % 10000 == 0:
+            print(f"已处理 {count}/{total_groups} 个 Group...", end='\r')
 
-    # 5. 返回结果，移除临时辅助列
-    result = df.loc[keep_indices].sort_values(by=['sequence_name', 'start'])
+    print(f"\n物理去重完成。")
+
+    # 6. 最终提取
+    result = data.loc[keep_indices].sort_values(by=['sequence_name', 'start'])
+    print(f"最终结果行数: {len(result)}")
     return result

@@ -22,7 +22,7 @@ from cropdock.a3m import crop_a3m_file
 from cropdock.run_msa import run_msa_mutil
 from cropdock.structure import atom_struct_2_seq
 from cropdock.utils import write_fasta
-from cropd2p.parse_cropseq_res import get_domain_range, get_sites_range
+from boltzscan.cropd2p.parse_cropseq_res import get_domain_range, get_sites_range
 
 # --- Placeholder functions for self-contained execution ---
 # In your actual project, you would use the imports above.
@@ -224,7 +224,7 @@ def main_batch(csv_path: Path,
         #     v_s = max(v[0] - 5, 0)
         #     v_e = v[1] + 5
         #     intervals_dct[k] = (v_s, v_e)
-        from cropd2p.parse_cropseq_res import filter_res_2_intervals, read_disopred3_res
+        from boltzscan.cropd2p.parse_cropseq_res import filter_res_2_intervals, read_disopred3_res
         res_dis = read_disopred3_res(diopred_path)
         intervals_dct = filter_res_2_intervals(res_dis)
 
