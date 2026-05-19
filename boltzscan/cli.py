@@ -163,6 +163,40 @@ def _build_parser():
         help='Number of subdirectories to split BOLTZ_INPUT/ into (default: 100)')
     p.add_argument('-w', '--max-workers', type=int, default=8, help='Threads for parallel FASTA writes (default: 8)')
 
+    # ipsae
+    p = sub_parsers.add_parser(
+        'ipsae',
+        help='Calculate TF-DNA ipSAE ranking scores and merge them into a score table',
+    )
+    p.add_argument('-r', '--res-dir', required=True,
+        help='Boltz result directory or its predictions/ subdirectory')
+    p.add_argument('-s', '--score-file', default=None,
+        help='Optional input score table (.csv, .csv.gz, .tsv, or .tsv.gz)')
+    p.add_argument('-o', '--output', default=None,
+        help='Output CSV path for the scored table (default: <res-dir>/ipsae_scored.csv)')
+    p.add_argument('-i', '--id-col', default=None,
+        help='Optional score table column matching Boltz prediction directory names')
+    p.add_argument('-f', '--force', action='store_true',
+        help='Recalculate IPSAE even when an existing *_10_10.txt file is present')
+    p.add_argument('-p', '--processes', type=int, default=1,
+        help='Number of concurrent IPSAE calculations (default: 1)')
+
+    # valid
+    p = sub_parsers.add_parser(
+        'valid',
+        help='Validate IPSAE ipTM_af values against Boltz pair_chains_iptm values',
+    )
+    p.add_argument('-r', '--res-dir', required=True,
+        help='Boltz result directory or its predictions/ subdirectory')
+    p.add_argument('-o', '--output', default=None,
+        help='Optional output CSV path for the validation report')
+    p.add_argument('-t', '--tolerance', type=float, default=0.05,
+        help='Allowed absolute difference between IPSAE ipTM_af and Boltz pair iptm (default: 0.05)')
+    p.add_argument('-f', '--force', action='store_true',
+        help='Recalculate IPSAE even when an existing *_10_10.txt file is present')
+    p.add_argument('-p', '--processes', type=int, default=1,
+        help='Number of concurrent IPSAE calculations (default: 1)')
+
     return parser
 
 
@@ -234,6 +268,63 @@ def _cmd_fimo2boltz(args):
     )
 
 
+def _cmd_ipsae(args):
+    from boltzscan.utils.ipsae_score import print_ipsae_warnings, score_ipsae_table
+
+    summary = score_ipsae_table(
+        res_dir=args.res_dir,
+        score_file=args.score_file,
+        output=args.output,
+        id_col=args.id_col,
+        force=args.force,
+        processes=args.processes,
+    )
+    print_ipsae_warnings(summary.warnings)
+    print(
+        f"Wrote {summary.output} "
+        f"({summary.matched_rows} matched rows, "
+        f"{summary.scored_predictions}/{summary.total_predictions} predictions scored)"
+    )
+
+
+def _cmd_valid(args):
+    from boltzscan.utils.ipsae_score import (
+        print_ipsae_warnings,
+        validate_ipsae_iptm,
+    )
+
+    summary = validate_ipsae_iptm(
+        res_dir=args.res_dir,
+        output=args.output,
+        tolerance=args.tolerance,
+        force=args.force,
+        processes=args.processes,
+    )
+    print_ipsae_warnings(summary.warnings)
+    if summary.output is not None:
+        print(f"Wrote {summary.output}")
+    incomplete = summary.total_predictions - summary.compared_predictions
+    print(
+        f"Validated {summary.compared_predictions}/{summary.total_predictions} predictions "
+        f"({summary.valid_predictions} valid, {summary.invalid_predictions} invalid, "
+        f"{incomplete} incomplete, "
+        f"tolerance={args.tolerance})"
+    )
+
+    if summary.total_predictions == 0:
+        print("No prediction directories found.", file=sys.stderr)
+        raise SystemExit(1)
+
+    failed = summary.result[summary.result['valid'] != True]
+    if not failed.empty:
+        cols = ['name', 'boltz_iptm', 'ipsae_iptm', 'iptm_diff', 'tolerance', 'valid']
+        print("Failed or incomplete validation rows:", file=sys.stderr)
+        print(failed.loc[:, cols].head(20).to_string(index=False), file=sys.stderr)
+        if len(failed) > 20:
+            print(f"... {len(failed) - 20} more", file=sys.stderr)
+        raise SystemExit(1)
+
+
 _DISPATCH = {
     'msa': _cmd_msa,
     'promoter': lambda a: (print(f"Extracting promoter regions using GFF: {a.gff}"), extract_promoters(a)),
@@ -244,6 +335,8 @@ _DISPATCH = {
     'boltzscan': _cmd_boltzscan,
     'cistarg': _cmd_cistarg,
     'fimo2boltz': _cmd_fimo2boltz,
+    'ipsae': _cmd_ipsae,
+    'valid': _cmd_valid,
     'extract_pd_from_pdb': lambda a: print(f"Extracting protein domains from PDB file: {a.pdb_file}"),
 }
 

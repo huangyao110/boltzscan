@@ -22,5 +22,7 @@ def calc_ipsae(cif_file, pae_file, ipsae_script=None):
 def read_ipsae(ipsae_file):
     df = pd.read_csv(ipsae_file, skipinitialspace=True, sep=' ')  # 跳过列名后的空格
     # 替换数据中的多余空格
-    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
     return df

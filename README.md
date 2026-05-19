@@ -32,7 +32,7 @@ BoltzScan consists of three main modules:
 ### Requirements
 
 - Python 3.11+
-- Required Python packages (see requirements.txt)
+- Required Python packages (see `pyproject.toml`)
 - Sufficient computational resources for large-scale motif scanning
 
 ### Setup
@@ -43,4 +43,46 @@ git clone https://github.com/yourusername/boltzscan.git
 cd boltzscan
 
 # Install required packages
-pip install -r requirements.txt
+pip install -e .
+pip install -e .[cistarg]  # optional FIMO/cisTarget dependencies
+```
+
+## IPSAE Ranking
+
+Use the `ipsae` command to generate a structure-derived ranking table from
+Boltz prediction results:
+
+```bash
+python bscan.py ipsae \
+  -r <boltz_results_dir_or_predictions_dir> \
+  -o <scored.csv> \
+  -p 8
+```
+
+To merge the scores into an existing candidate table, pass that table with
+`-s/--score-file`. The table must contain a column matching Boltz prediction
+directory names; use `-i/--id-col` if the column is not named `boltz_name`,
+`name`, or `id`.
+
+For TF-DNA predictions, chain `A` is treated as the transcription factor and
+chains `B`/`C` as the DNA duplex. The final ranking score first symmetrizes
+each TF-DNA interface with the IPSAE `Type == "max"` row, then requires both
+DNA strands to score well:
+
+```text
+ipsae = min(max(A->B, B->A), max(A->C, C->A))
+```
+
+The DNA-DNA `B-C` interface is excluded. Sort candidates by the output `ipsae`
+column in descending order; the command writes the table in this order by
+default. The stricter raw directional minimum is also written as
+`ipsae_asym_min` for diagnostics. The output includes Boltz `pair_chains_iptm`
+as `boltz_iptm`, IPSAE-script `ipTM_af` as `ipsae_iptm`, both computed with the
+same TF-DNA pair rule, plus `iptm_diff`. The global Boltz confidence `iptm` is
+kept separately as `boltz_iptm_global`.
+
+To compare IPSAE-derived `ipTM_af` with Boltz JSON `pair_chains_iptm`, run:
+
+```bash
+python bscan.py valid -r <boltz_results_dir_or_predictions_dir> -o valid.csv -p 8
+```
