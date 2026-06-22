@@ -1,5 +1,6 @@
 """Download cisBP entire dataset (TF_Information + PWMs) and parse high-quality refs."""
-import io
+import os
+import tempfile
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -17,10 +18,17 @@ PWMS_URL = f"{BASE}/PWMs.zip"
 def _download_zip(url, dest_dir):
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    r = requests.get(url, stream=True, timeout=600)
-    r.raise_for_status()
-    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-        z.extractall(dest_dir)
+    with requests.get(url, stream=True, timeout=600) as r:
+        r.raise_for_status()
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                tmp.write(chunk)
+            tmp_path = tmp.name
+    try:
+        with zipfile.ZipFile(tmp_path) as z:
+            z.extractall(dest_dir)
+    finally:
+        os.unlink(tmp_path)
     return dest_dir
 
 
@@ -48,6 +56,8 @@ def parse_cisbp_refs(tf_info_path):
         d["family"] = row["Family_Name"]
         d["species"] = row["TF_Species"]
     return [
+        # uniprot_ids intentionally empty: cisBP TF_Information.txt has no UniProt column;
+        # sequences are resolved downstream via the UniProt ID-mapping step (Task 5).
         RefTf(ref_id=f"cisbp:{dbid}", source="cisbp", species=v["species"],
               family=v["family"], dbid=dbid, motif_ids=sorted(v["motifs"]))
         for dbid, v in by_dbid.items()
