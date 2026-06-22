@@ -70,17 +70,31 @@ def build_reference_db(refs_dir="data/pwms/_refs", pfam=None,
     if include_cisbp:
         cis_refs, pwms_dir = _gather_cisbp(root / "cisbp", refresh)
         refs += cis_refs
-        # copy needed cisBP motif txt -> motif_store, convert to meme
+        # copy needed cisBP motif txt -> motif_store, convert to meme.
+        # Resumable: skip motifs already copied. cisBP ships many empty/degenerate
+        # PWM files (header-only); count those rather than logging one line each.
         if pwms_dir:
             pwms_path = Path(pwms_dir)
             wanted = {m for r in cis_refs for m in r.motif_ids}
+            n_copied = n_skipped = 0
             for m in wanted:
+                if (txt_dir / f"{m}.txt").exists():      # already copied (resume)
+                    n_copied += 1
+                    continue
                 src = pwms_path / f"{m}.txt"
-                if src.exists():
-                    try:
-                        pwmio.copy_cisbp_pwm(src, m, txt_dir, meme_dir)
-                    except Exception as e:  # degenerate cisBP txt
-                        print(f"[refs] skip cisBP {m}: {e}")
+                if not src.exists():
+                    n_skipped += 1
+                    continue
+                try:
+                    out_txt, _ = pwmio.copy_cisbp_pwm(src, m, txt_dir, meme_dir)
+                    if out_txt is None:                  # degenerate/empty
+                        n_skipped += 1
+                    else:
+                        n_copied += 1
+                except Exception:                        # empty matrix / unparseable
+                    n_skipped += 1
+            print(f"[refs] cisBP motifs: {n_copied} copied, {n_skipped} skipped "
+                  f"(empty/degenerate/missing PWM)")
     if include_jaspar:
         refs += _gather_jaspar(root / "jaspar", txt_dir, meme_dir, refresh)
 

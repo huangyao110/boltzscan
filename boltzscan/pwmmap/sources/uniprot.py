@@ -93,7 +93,7 @@ def _resolve_one(ref):
     return _seq_from_fasta(search_fasta(ref.dbid, ref.species))
 
 
-def resolve_sequences(refs, cache_path, max_workers=8):
+def resolve_sequences(refs, cache_path, max_workers=12):
     """Return {ref_id: protein_seq} for refs resolvable to a UniProt sequence.
 
     Cached per ref_id in cache_path (value "" marks a previously-unresolved ref
