@@ -201,7 +201,7 @@ def _build_parser():
     p = sub_parsers.add_parser('build-pwm-refs',
         help='Stage A: download cisBP+JASPAR, extract reference DBDs, cache the reference store')
     p.add_argument('--refs', default='data/pwms/_refs', help='Reference store dir (default: data/pwms/_refs)')
-    p.add_argument('-m', '--pfam', default='data/pfam/Pfam-A.hmm')
+    p.add_argument('-m', '--pfam', default=None)
     p.add_argument('-c', '--cpu', type=int, default=8)
     p.add_argument('--no-cisbp', action='store_true')
     p.add_argument('--no-jaspar', action='store_true')
@@ -219,7 +219,7 @@ def _build_parser():
     p.add_argument('--min-cov', type=float, default=0.8, help='Min DBD coverage for a blast hit')
     p.add_argument('--blastp', default=None)
     p.add_argument('--makeblastdb', default=None)
-    p.add_argument('-m', '--pfam', default='data/pfam/Pfam-A.hmm')
+    p.add_argument('-m', '--pfam', default=None)
     p.add_argument('-c', '--cpu', type=int, default=8)
 
     # ipsae

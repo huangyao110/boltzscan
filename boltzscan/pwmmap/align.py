@@ -61,9 +61,11 @@ def parse_blast_rows(rows, min_cov):
 def blast_dbd_pct_id(query_fasta, db_path, blastp, cpu=8, min_cov=0.8):
     with tempfile.NamedTemporaryFile("w+", suffix=".tsv", delete=False) as tmp:
         out = tmp.name
-    subprocess.run([blastp, "-query", str(query_fasta), "-db", str(db_path),
-                    "-outfmt", OUTFMT, "-num_threads", str(cpu),
-                    "-max_target_seqs", "2000", "-out", out], check=True)
-    rows = [ln.split("\t") for ln in Path(out).read_text().splitlines() if ln.strip()]
-    Path(out).unlink(missing_ok=True)
+    try:
+        subprocess.run([blastp, "-query", str(query_fasta), "-db", str(db_path),
+                        "-outfmt", OUTFMT, "-num_threads", str(cpu),
+                        "-max_target_seqs", "2000", "-out", out], check=True)
+        rows = [ln.split("\t") for ln in Path(out).read_text().splitlines() if ln.strip()]
+    finally:
+        Path(out).unlink(missing_ok=True)
     return parse_blast_rows(rows, min_cov)

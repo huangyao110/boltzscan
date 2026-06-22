@@ -37,7 +37,7 @@ def map_ids_to_uniprot(ids, from_db="Ensembl_Genomes", to_db="UniProtKB"):
     job = sub.json()["jobId"]
     for _ in range(60):
         st = requests.get(f"{IDMAP}/status/{job}", timeout=120).json()
-        if st.get("results") is not None or st.get("jobStatus") == "FINISHED":
+        if st.get("jobStatus") == "FINISHED":
             break
         time.sleep(3)
     res = requests.get(f"{IDMAP}/results/{job}?size=500", timeout=120).json()

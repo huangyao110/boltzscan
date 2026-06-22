@@ -13,7 +13,7 @@ from Bio import SeqIO
 from boltzscan.utils.find_tf import DBD_ACCS
 from boltzscan.pwmmap.thresholds import family_for_pfam
 
-DEFAULT_PFAM = "data/pfam/Pfam-A.hmm"
+DEFAULT_PFAM = str(Path(__file__).resolve().parents[2] / "data" / "pfam" / "Pfam-A.hmm")
 
 
 @dataclass

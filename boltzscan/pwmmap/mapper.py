@@ -25,7 +25,8 @@ def _blast(query_fasta, store, blastp, makeblastdb, cpu, min_cov, work_dir):
 
 def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
                 threshold_mode="family", threshold=0.70, min_cov=0.8,
-                blastp=None, makeblastdb=None, pfam="data/pfam/Pfam-A.hmm", cpu=8):
+                blastp=None, makeblastdb=None, pfam=None, cpu=8):
+    pfam = pfam or dbd.DEFAULT_PFAM
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     txt_dir = out_dir/"txt"; meme_dir = out_dir/"meme"
     txt_dir.mkdir(exist_ok=True); meme_dir.mkdir(exist_ok=True)

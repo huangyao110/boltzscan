@@ -15,6 +15,7 @@ dependencies = [
     "numpy>=1.26,<2.0",
     "pyyaml>=6.0",
     "tqdm>=4.66",
+    "requests>=2.28",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,7 @@ boltzscan = "boltzscan.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["boltzscan*"]
-# The `boltz/` subtree is a vendored, separately-installable project with its
-# own pyproject.toml; do not pick it up as a subpackage of boltzscan.
-exclude = ["boltzscan.boltz*"]
+# The `boltz/` and `esm/` subtrees are vendored, separately-installable
+# projects with their own pyproject.toml (and incompatible Python pins); do
+# not pick them up as subpackages of boltzscan.
+exclude = ["boltzscan.boltz*", "boltzscan.esm*"]

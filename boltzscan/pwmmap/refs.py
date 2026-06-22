@@ -47,14 +47,18 @@ def load_ref_index(refs_dir):
     return out
 
 
-def build_reference_db(refs_dir="data/pwms/_refs", pfam="data/pfam/Pfam-A.hmm",
+def build_reference_db(refs_dir="data/pwms/_refs", pfam=None,
                        cpu=8, refresh=False, include_cisbp=True, include_jaspar=True):
+    pfam = pfam or dbd.DEFAULT_PFAM
     root = Path(refs_dir)
 
-    # Fix 2: idempotency — skip rebuild if both artifacts exist and refresh not requested
+    # idempotency — skip rebuild if both artifacts exist and refresh not requested
     if not refresh and (root / "ref_dbd.fasta").exists() and (root / "ref_index.tsv").exists():
         print(f"[refs] reuse existing store at {root}")
         return load_ref_store(root)
+
+    if not Path(pfam).exists():
+        raise SystemExit(f"Pfam HMM not found: {pfam} — build/point --pfam to a hmmpress-ed Pfam-A.hmm")
 
     root.mkdir(parents=True, exist_ok=True)
     txt_dir = root / "motif_store" / "txt"
