@@ -1,0 +1,73 @@
+"""Stage B: map a species' TFs to reference motifs via DBD %ID (run per species)."""
+import json
+import shutil
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+from boltzscan.pwmmap import dbd, align
+from boltzscan.pwmmap.refs import load_ref_store, load_ref_index
+from boltzscan.pwmmap.thresholds import cutoff_for
+
+
+@dataclass
+class MapSummary:
+    out_dir: Path
+    n_species_tfs: int
+    n_mapped: int
+    n_motifs: int
+
+
+def _blast(query_fasta, store, blastp, makeblastdb, cpu, min_cov, work_dir):
+    db = align.make_blast_db(store.ref_dbd_fasta, Path(work_dir)/"refdb", makeblastdb)
+    return align.blast_dbd_pct_id(query_fasta, db, blastp, cpu=cpu, min_cov=min_cov)
+
+
+def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
+                threshold_mode="family", threshold=0.70, min_cov=0.8,
+                blastp=None, makeblastdb=None, pfam="data/pfam/Pfam-A.hmm", cpu=8):
+    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    txt_dir = out_dir/"txt"; meme_dir = out_dir/"meme"
+    txt_dir.mkdir(exist_ok=True); meme_dir.mkdir(exist_ok=True)
+    store = load_ref_store(refs_dir)
+    index = load_ref_index(refs_dir)            # dbd_seq_id -> row(family, motif_ids,...)
+    bp, mk = align.resolve_blast_bins(blastp, makeblastdb)
+
+    recs = dbd.extract_dbds(species_fasta, domtbl=domtbl, pfam=pfam, cpu=cpu, work_dir=out_dir)
+    sp_dbd_fa = out_dir/"species_dbd.fasta"
+    dbd.write_dbd_fasta(recs, sp_dbd_fa)
+    n_species_tfs = len({r.tf_id for r in recs})
+
+    hits = _blast(sp_dbd_fa, store, bp, mk, cpu, min_cov, out_dir)
+
+    tf2motifs = defaultdict(set)
+    report = [("species_tf", "pfam_acc", "ref_id", "source", "species", "pct_id", "motif_id")]
+    for h in hits:
+        row = index.get(h.ref_dbd_id)
+        if not row:
+            continue
+        cut = cutoff_for(h.query_pfam, mode=threshold_mode, global_thr=threshold)
+        if h.pct_id < cut:
+            continue
+        for m in row["motif_ids"].split(";"):
+            if not m:
+                continue
+            tf2motifs[h.query_tf].add(m)
+            report.append((h.query_tf, h.query_pfam, row["ref_id"], row["source"],
+                           row["species"], f"{h.pct_id:.3f}", m))
+
+    # write tf2pwms.json + copy matched motif files from the store
+    tf2pwms = {tf: sorted(ms) for tf, ms in tf2motifs.items()}
+    (out_dir/"tf2pwms.json").write_text(json.dumps(tf2pwms, indent=2))
+    needed = {m for ms in tf2pwms.values() for m in ms}
+    for m in needed:
+        for d, dst in ((store.motif_txt_dir, txt_dir), (store.motif_meme_dir, meme_dir)):
+            for ext in (".txt", ".meme"):
+                src = Path(d)/f"{m}{ext}"
+                if src.exists():
+                    shutil.copyfile(src, dst/f"{m}{ext}")
+    with open(out_dir/"map_report.tsv", "w") as fh:
+        for row in report:
+            fh.write("\t".join(map(str, row)) + "\n")
+
+    return MapSummary(out_dir, n_species_tfs, len(tf2pwms), len(needed))
