@@ -457,7 +457,8 @@ def _cmd_cluster_motifs(args):
     s = cluster_reference_motifs(refs_dir=args.refs, tomtom=args.tomtom,
                                  qthresh=args.qthresh, cpu=args.cpu)
     print(f"Wrote {s.clusters_tsv} "
-          f"({s.n_motifs} motifs -> {s.n_clusters} clusters across {s.n_families} families)")
+          f"({s.n_clustered} motifs with PWM -> {s.n_clusters} clusters "
+          f"across {s.n_families} families; {s.n_motifs} total in map)")
 
 
 def _cmd_ipsae(args):

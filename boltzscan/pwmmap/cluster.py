@@ -11,9 +11,9 @@ else it becomes a new representative. The result is cached as
 ``_refs/motif_clusters.tsv`` (motif_id, family, representative_id) and consumed
 by Stage B's ``--collapse-clusters``.
 """
-import re
 import shutil
 import subprocess
+import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -30,17 +30,14 @@ _MEME_HEADER = (
 @dataclass
 class ClusterSummary:
     clusters_tsv: Path
-    n_motifs: int
+    n_motifs: int        # total motifs in the map (incl. no-PWM self-reps)
+    n_clustered: int     # motifs that had a PWM and went through Tomtom clustering
     n_clusters: int
     n_families: int
 
 
 def resolve_tomtom(tomtom=None):
     return tomtom or shutil.which("tomtom") or _MEME_ENV_TOMTOM
-
-
-def _safe(name):
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name) or "NA"
 
 
 def build_motif_meta(ref_index_tsv):
@@ -104,6 +101,12 @@ def run_tomtom_self(meme_file, tomtom, qthresh):
         [tomtom, "-text", "-no-ssc", "-thresh", str(qthresh), str(meme_file), str(meme_file)],
         capture_output=True, text=True,
     )
+    if proc.returncode != 0:
+        # Surface failures instead of silently turning the whole family into
+        # singletons (empty adjacency -> every motif its own representative).
+        tail = (proc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
+        print(f"[cluster] WARNING: tomtom rc={proc.returncode} on "
+              f"{Path(meme_file).name}: {tail[0]}", file=sys.stderr)
     return parse_tomtom_edges(proc.stdout)
 
 
@@ -126,10 +129,12 @@ def greedy_cluster(motif_ids, support, adj):
     return rep_of
 
 
-def _cluster_one_bucket(fam, motifs, meme_dir, work, tomtom, qthresh, support):
+def _cluster_one_bucket(idx, motifs, meme_dir, work, tomtom, qthresh, support):
+    # work file named by bucket index (not family) so two family names can never
+    # sanitize to the same path and race under the thread pool.
     if len(motifs) == 1:
         return {motifs[0]: motifs[0]}
-    combined = _combined_meme(motifs, meme_dir, work / f"{_safe(fam)}.meme")
+    combined = _combined_meme(motifs, meme_dir, work / f"bucket_{idx}.meme")
     adj = run_tomtom_self(combined, tomtom, qthresh)
     return greedy_cluster(motifs, support, adj)
 
@@ -152,9 +157,9 @@ def cluster_reference_motifs(refs_dir, tomtom=None, qthresh=0.05, cpu=8):
     # Process families concurrently; each runs its own (single-threaded) tomtom.
     motif2rep = {}
     with ThreadPoolExecutor(max_workers=cpu) as ex:
-        futs = [ex.submit(_cluster_one_bucket, fam, motifs, meme_dir, work,
+        futs = [ex.submit(_cluster_one_bucket, i, motifs, meme_dir, work,
                           tomtom, qthresh, motif_support)
-                for fam, motifs in buckets.items()]
+                for i, (fam, motifs) in enumerate(buckets.items())]
         for fut in futs:
             motif2rep.update(fut.result())
 
@@ -169,7 +174,7 @@ def cluster_reference_motifs(refs_dir, tomtom=None, qthresh=0.05, cpu=8):
             fh.write(f"{m}\t{motif_family.get(m, '?')}\t{motif2rep[m]}\n")
 
     n_clusters = len(set(motif2rep.values()))
-    return ClusterSummary(out, len(motif2rep), n_clusters, len(buckets))
+    return ClusterSummary(out, len(motif2rep), len(have_meme), n_clusters, len(buckets))
 
 
 def load_clusters(refs_dir):
