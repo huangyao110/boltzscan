@@ -36,6 +36,7 @@ def load_ref_store(refs_dir):
 
 
 def load_ref_index(refs_dir):
+    """Load ref_index.tsv keyed by dbd_seq_id (blast subject id); one TF may have multiple DBD rows."""
     out = {}
     with open(Path(refs_dir) / "ref_index.tsv") as f:
         header = f.readline().rstrip("\n").split("\t")
@@ -49,6 +50,12 @@ def load_ref_index(refs_dir):
 def build_reference_db(refs_dir="data/pwms/_refs", pfam="data/pfam/Pfam-A.hmm",
                        cpu=8, refresh=False, include_cisbp=True, include_jaspar=True):
     root = Path(refs_dir)
+
+    # Fix 2: idempotency — skip rebuild if both artifacts exist and refresh not requested
+    if not refresh and (root / "ref_dbd.fasta").exists() and (root / "ref_index.tsv").exists():
+        print(f"[refs] reuse existing store at {root}")
+        return load_ref_store(root)
+
     root.mkdir(parents=True, exist_ok=True)
     txt_dir = root / "motif_store" / "txt"
     meme_dir = root / "motif_store" / "meme"
@@ -60,11 +67,8 @@ def build_reference_db(refs_dir="data/pwms/_refs", pfam="data/pfam/Pfam-A.hmm",
         cis_refs, pwms_dir = _gather_cisbp(root / "cisbp", refresh)
         refs += cis_refs
         # copy needed cisBP motif txt -> motif_store, convert to meme
-        try:
-            pwms_path = Path(pwms_dir) if pwms_dir is not None else None
-        except TypeError:
-            pwms_path = None  # pwms_dir is not a valid path (e.g. in-memory dict stub)
-        if pwms_path is not None:
+        if pwms_dir:
+            pwms_path = Path(pwms_dir)
             wanted = {m for r in cis_refs for m in r.motif_ids}
             for m in wanted:
                 src = pwms_path / f"{m}.txt"
@@ -90,15 +94,15 @@ def build_reference_db(refs_dir="data/pwms/_refs", pfam="data/pfam/Pfam-A.hmm",
             by_id[ref.ref_id] = ref
 
     # extract reference DBDs (hmmsearch over ref proteins), write ref_dbd.fasta + index
+    # Fix 3: capture written ids from write_dbd_fasta to keep fasta and index in lockstep
     recs = dbd.extract_dbds(prot_fa, domtbl=None, pfam=pfam, cpu=cpu, work_dir=root)
-    dbd.write_dbd_fasta(recs, root / "ref_dbd.fasta")
+    written_ids = dbd.write_dbd_fasta(recs, root / "ref_dbd.fasta")
     with open(root / "ref_index.tsv", "w") as fh:
         fh.write("ref_id\tsource\tspecies\tfamily\tpfam_acc\tdbd_seq_id\tmotif_ids\n")
-        for i, r in enumerate(recs):
+        for r, sid in zip(recs, written_ids):
             ref = by_id.get(r.tf_id)
             if not ref:
                 continue
-            sid = f"{r.tf_id}__{r.pfam_acc}__{i}"
             fh.write(f"{ref.ref_id}\t{ref.source}\t{ref.species}\t{ref.family}\t"
                      f"{r.pfam_acc}\t{sid}\t{';'.join(ref.motif_ids)}\n")
 

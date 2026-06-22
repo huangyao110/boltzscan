@@ -74,6 +74,10 @@ def extract_dbds(proteins_fasta, domtbl=None, pfam=DEFAULT_PFAM, cpu=8, work_dir
 def write_dbd_fasta(records, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    written_ids = []
     with open(path, "w") as fh:
         for i, r in enumerate(records):
-            fh.write(f">{r.tf_id}__{r.pfam_acc}__{i}\n{r.seq}\n")
+            seq_id = f"{r.tf_id}__{r.pfam_acc}__{i}"
+            fh.write(f">{seq_id}\n{r.seq}\n")
+            written_ids.append(seq_id)
+    return written_ids

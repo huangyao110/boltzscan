@@ -8,7 +8,7 @@ def test_build_reference_db_offline(tmp_path, monkeypatch):
             RefTf("jaspar:MA1.1","jaspar","Arabidopsis","bHLH","MA1.1",["MA1.1"],["P9"])]
     # a real bHLH DBD sequence (~60 aa) padded; both refs get the same for the test
     bhlh = ("MKRAHHNALERRRRDHIKDSFSSLRDSVPSLQGEKASRAQILDKATEYIQYMRRKNHTHQQDIDDLKRQNALLEQQVRAL")
-    monkeypatch.setattr(R, "_gather_cisbp", lambda d, refresh: ([refs[0]], {"M001_3.00": None}))
+    monkeypatch.setattr(R, "_gather_cisbp", lambda d, refresh: ([refs[0]], None))
     monkeypatch.setattr(R, "_gather_jaspar", lambda d, t, m, refresh: [refs[1]])
     monkeypatch.setattr(R, "_resolve_seqs",
                         lambda rr, c: {"cisbp:G1": bhlh, "jaspar:MA1.1": bhlh})
