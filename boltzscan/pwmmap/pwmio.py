@@ -31,11 +31,28 @@ def write_txt_and_meme(pfm, motif_id, txt_dir, meme_dir):
 
 
 def copy_cisbp_pwm(src_txt, motif_id, txt_dir, meme_dir):
+    # Read source before doing anything so we can detect degenerate files.
+    src_txt = Path(src_txt)
+    raw = src_txt.read_text(errors="replace") if src_txt.exists() else ""
+    lines = [l for l in raw.splitlines() if l.strip()]
+
+    # Detect degenerate: empty, MEME-format, or no row starting with digit or "Pos".
+    if not lines:
+        print(f"[pwmio] skip degenerate cisBP PWM {motif_id}")
+        return (None, None)
+    if lines[0].startswith("MEME version"):
+        print(f"[pwmio] skip degenerate cisBP PWM {motif_id}")
+        return (None, None)
+    has_data = any(l[0].isdigit() or l.startswith("Pos") for l in lines)
+    if not has_data:
+        print(f"[pwmio] skip degenerate cisBP PWM {motif_id}")
+        return (None, None)
+
     txt_dir, meme_dir = Path(txt_dir), Path(meme_dir)
     txt_dir.mkdir(parents=True, exist_ok=True)
     meme_dir.mkdir(parents=True, exist_ok=True)
     dst_txt = txt_dir / f"{motif_id}.txt"
     shutil.copyfile(src_txt, dst_txt)
-    txt_to_meme(input_path=str(dst_txt), output_path=str(meme_dir / f"{motif_id}.meme"),
-                force=True)
-    return dst_txt, meme_dir / f"{motif_id}.meme"
+    meme_path = meme_dir / f"{motif_id}.meme"
+    txt_to_meme(input_path=str(dst_txt), output_path=str(meme_path), force=True)
+    return dst_txt, meme_path
