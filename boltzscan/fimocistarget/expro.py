@@ -73,8 +73,15 @@ def parse_gff3(file_path: str) -> Generator[List[Dict[str, Any]], None, None]:
 
 
                 # --- Grouping Logic ---
-                # Decide how to group. Simplest: group by features sharing the same *first* field (seqid)?
-                # Or rely *only* on '###' separator? Let's rely on '###' for now.
+                # Prefer explicit '###' separators (handled above). When a GFF
+                # has none (e.g. coreset.gff), group implicitly per gene: a new
+                # top-level 'gene' feature closes the previous group. Without
+                # this, the whole file collapses into one group and find_tss()
+                # emits at most a single (wrong) promoter.
+                if type_ == 'gene' and current_gene:
+                    yield current_gene
+                    current_gene = []
+
                 current_gene.append(feature)
 
             # Yield the last gene group if file doesn't end with ###

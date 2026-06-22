@@ -163,6 +163,40 @@ def _build_parser():
         help='Number of subdirectories to split BOLTZ_INPUT/ into (default: 100)')
     p.add_argument('-w', '--max-workers', type=int, default=8, help='Threads for parallel FASTA writes (default: 8)')
 
+    # hit2fasta
+    p = sub_parsers.add_parser(
+        'hit2fasta',
+        help='Build a candidate TF protein FASTA from motif hit statistics',
+    )
+    p.add_argument('-s', '--hit-statistics', required=True,
+        help='hit_statistics.csv from cisTarget/FIMO output')
+    p.add_argument('-j', '--tf2pwms', required=True,
+        help='JSON mapping TF_id -> [motif_id, ...]')
+    p.add_argument('-p', '--protein-fasta', required=True,
+        help='Protein FASTA containing TF sequences')
+    p.add_argument('-o', '--output', required=True,
+        help='Output candidate TF protein FASTA')
+    p.add_argument('--motif-col', default='motif_id',
+        help='Motif ID column in hit statistics (default: motif_id)')
+
+    # find-tf
+    p = sub_parsers.add_parser(
+        'find-tf',
+        help='Identify plant TFs in a protein FASTA (hmmsearch vs Pfam-A + PlantTFDB-style rules)',
+    )
+    p.add_argument('-f', '--proteins', required=True,
+        help='Protein FASTA to scan (record IDs become gene_id)')
+    p.add_argument('-o', '--output', required=True,
+        help='Output directory (tf_annotation.tsv, tf_proteins.fasta, pfam.domtbl)')
+    p.add_argument('-m', '--pfam', default=None,
+        help='hmmpress-ed Pfam-A.hmm (default: data/pfam/Pfam-A.hmm)')
+    p.add_argument('-c', '--cpu', type=int, default=8,
+        help='Threads for hmmsearch (default: 8)')
+    p.add_argument('--domtbl', default=None,
+        help='Reuse an existing hmmsearch domtblout instead of running hmmsearch')
+    p.add_argument('--force', action='store_true',
+        help='Re-run hmmsearch even if <output>/pfam.domtbl already exists')
+
     # ipsae
     p = sub_parsers.add_parser(
         'ipsae',
@@ -180,6 +214,44 @@ def _build_parser():
         help='Recalculate IPSAE even when an existing *_10_10.txt file is present')
     p.add_argument('-p', '--processes', type=int, default=1,
         help='Number of concurrent IPSAE calculations (default: 1)')
+
+    # txt2meme
+    p = sub_parsers.add_parser(
+        'txt2meme',
+        help='Convert PWM txt files to MEME motif files',
+    )
+    p.add_argument('-i', '--input', required=True,
+        help='Input PWM txt file or directory containing .txt files')
+    p.add_argument('-o', '--output', required=True,
+        help='Output .meme file for single input, or output directory for batch input')
+    p.add_argument('-n', '--nsites', type=int, default=100,
+        help='MEME nsites value to write (default: 100)')
+    p.add_argument('-b', '--background', default=None,
+        help='Comma-separated A,C,G,T background frequencies (default: 0.25,0.25,0.25,0.25)')
+    p.add_argument('--bg-fasta', default=None,
+        help='FASTA file used to calculate A,C,G,T background frequencies')
+    p.add_argument('-f', '--force', action='store_true',
+        help='Overwrite existing .meme files')
+
+    # esm-embed
+    p = sub_parsers.add_parser(
+        'esm-embed',
+        help='Embed protein sequences with ESMC-6B (runs in the esmfold2 conda env)',
+    )
+    p.add_argument('-f', '--fasta', required=True, help='Input protein FASTA')
+    p.add_argument('-o', '--output', required=True, help='Output .npz path for embeddings')
+    p.add_argument('-w', '--weights', default=None,
+        help='ESMC-6B weights directory (default: $BOLTZSCAN_ESMC_WEIGHTS or the local esm_weights/ESMC-6B)')
+    p.add_argument('-p', '--pooling', default='mean', choices=['mean', 'cls', 'none'],
+        help='mean/cls -> [N,D]; none -> per-residue [L,D] arrays (default: mean)')
+    p.add_argument('-d', '--device', default='cuda', help='torch device (default: cuda)')
+    p.add_argument('-b', '--batch-size', type=int, default=8, help='Sequences per batch (default: 8)')
+    p.add_argument('-L', '--max-len', type=int, default=None,
+        help='Truncate sequences to this many residues (default: no truncation)')
+    p.add_argument('--dtype', default='bfloat16', choices=['bfloat16', 'float16', 'float32'],
+        help='Model/compute dtype (default: bfloat16; forced to float32 on CPU)')
+    p.add_argument('--python-exe', default=None,
+        help='Python interpreter to run the worker (default: $BOLTZSCAN_ESM_PYTHON or the esmfold2 env)')
 
     # valid
     p = sub_parsers.add_parser(
@@ -268,6 +340,61 @@ def _cmd_fimo2boltz(args):
     )
 
 
+def _cmd_candidate_tf_fasta(args):
+    from boltzscan.utils.tf_candidates import build_candidate_tf_fasta
+
+    summary = build_candidate_tf_fasta(
+        hit_statistics=args.hit_statistics,
+        tf2pwms_path=args.tf2pwms,
+        protein_fasta=args.protein_fasta,
+        output=args.output,
+        motif_col=args.motif_col,
+    )
+    print(
+        f"Wrote {summary.output} "
+        f"({summary.written_tfs}/{summary.candidate_tfs} candidate TFs with protein sequence)"
+    )
+    print(
+        f"Motifs: {summary.matched_motifs}/{summary.hit_motifs} hit motifs matched tf2pwms"
+    )
+    if summary.missing_tfs:
+        print(
+            f"Warning: {len(summary.missing_tfs)} candidate TFs missing from protein FASTA "
+            f"(first few: {summary.missing_tfs[:5]})",
+            file=sys.stderr,
+        )
+    if summary.unmatched_motifs:
+        print(
+            f"Warning: {len(summary.unmatched_motifs)} hit motifs not found in tf2pwms "
+            f"(first few: {summary.unmatched_motifs[:5]})",
+            file=sys.stderr,
+        )
+
+
+def _cmd_find_tf(args):
+    from boltzscan.utils.find_tf import (
+        DEFAULT_PFAM,
+        find_transcription_factors,
+        print_report,
+    )
+
+    summary = find_transcription_factors(
+        proteins=args.proteins,
+        out_dir=args.output,
+        pfam=args.pfam or DEFAULT_PFAM,
+        cpu=args.cpu,
+        force=args.force,
+        domtbl=args.domtbl,
+    )
+    print_report(summary)
+    print(
+        f"Wrote {summary.annotation_tsv} "
+        f"({summary.n_tf}/{summary.n_total} proteins are TFs across "
+        f"{len(summary.family_counts)} families; "
+        f"{summary.n_te_excluded} transposon-derived dropped)"
+    )
+
+
 def _cmd_ipsae(args):
     from boltzscan.utils.ipsae_score import print_ipsae_warnings, score_ipsae_table
 
@@ -285,6 +412,44 @@ def _cmd_ipsae(args):
         f"({summary.matched_rows} matched rows, "
         f"{summary.scored_predictions}/{summary.total_predictions} predictions scored)"
     )
+
+
+def _cmd_txt2meme(args):
+    from boltzscan.utils.io_utils import calculate_fasta_background, txt_to_meme
+
+    if args.background is not None and args.bg_fasta is not None:
+        raise SystemExit("Use either --background or --bg-fasta, not both")
+    if args.bg_fasta is not None:
+        background = calculate_fasta_background(args.bg_fasta)
+    else:
+        background = _parse_background(args.background)
+    output_files = txt_to_meme(
+        input_path=args.input,
+        output_path=args.output,
+        nsites=args.nsites,
+        background=background,
+        force=args.force,
+    )
+    bg_text = ','.join(f'{value:.4f}' for value in background)
+    print(f"Background A,C,G,T: {bg_text}")
+    print(f"Wrote {len(output_files)} MEME file(s) to {args.output}")
+
+
+def _cmd_esm_embed(args):
+    from boltzscan.esm_embed.runner import run_esmc_embed
+
+    out = run_esmc_embed(
+        fasta=args.fasta,
+        output=args.output,
+        weights=args.weights,
+        pooling=args.pooling,
+        device=args.device,
+        batch_size=args.batch_size,
+        max_len=args.max_len,
+        dtype=args.dtype,
+        python_exe=args.python_exe,
+    )
+    print(f"Wrote ESMC-6B embeddings to {out}")
 
 
 def _cmd_valid(args):
@@ -335,10 +500,31 @@ _DISPATCH = {
     'boltzscan': _cmd_boltzscan,
     'cistarg': _cmd_cistarg,
     'fimo2boltz': _cmd_fimo2boltz,
+    'hit2fasta': _cmd_candidate_tf_fasta,
+    'find-tf': _cmd_find_tf,
     'ipsae': _cmd_ipsae,
+    'txt2meme': _cmd_txt2meme,
+    'esm-embed': _cmd_esm_embed,
     'valid': _cmd_valid,
     'extract_pd_from_pdb': lambda a: print(f"Extracting protein domains from PDB file: {a.pdb_file}"),
 }
+
+
+def _parse_background(value):
+    if value is None:
+        return [0.25, 0.25, 0.25, 0.25]
+    try:
+        background = [float(v.strip()) for v in str(value).split(',')]
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --background value: {value}") from exc
+    if len(background) != 4:
+        raise SystemExit("--background must contain four comma-separated values for A,C,G,T")
+    total = sum(background)
+    if total <= 0:
+        raise SystemExit("--background frequencies must sum to a positive value")
+    if not 0.99 <= total <= 1.01:
+        raise SystemExit(f"--background frequencies must sum to 1.0, got {total:.6f}")
+    return background
 
 
 def main(argv=None):
