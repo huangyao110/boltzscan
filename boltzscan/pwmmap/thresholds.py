@@ -5,6 +5,8 @@ thresholds for motif inference (fraction identity over the aligned domain).
 Families without a calibrated value use DEFAULT_CUTOFF.
 """
 
+from boltzscan.utils.find_tf import DBD_ACCS
+
 # Canonical Pfam-acc -> family. Seeded from boltzscan.utils.find_tf.DBD_ACCS so
 # both modules agree on which Pfam is which family.
 PFAM_FAMILY = {
@@ -23,6 +25,10 @@ PFAM_FAMILY = {
     "PF28235": "VOZ",
 }
 
+assert set(PFAM_FAMILY) == DBD_ACCS, (
+    "PFAM_FAMILY keys drifted from find_tf.DBD_ACCS; keep them in sync"
+)
+
 DEFAULT_CUTOFF = 0.70
 
 # Family-specific DBD %ID cutoffs (fraction). Values from cisBP/Weirauch 2014;
@@ -34,10 +40,10 @@ FAMILY_CUTOFF = {
     "SBP": 0.70, "TCP": 0.66, "GRAS": 0.60, "ZF-HD": 0.70, "LBD": 0.62,
 }
 
-def family_for_pfam(pfam_acc):
+def family_for_pfam(pfam_acc: str) -> "str | None":
     return PFAM_FAMILY.get(pfam_acc)
 
-def cutoff_for(pfam_acc, mode="family", global_thr=0.70):
+def cutoff_for(pfam_acc: str, mode: str = "family", global_thr: float = 0.70) -> float:
     if mode == "global":
         return global_thr
     fam = family_for_pfam(pfam_acc)
