@@ -197,6 +197,31 @@ def _build_parser():
     p.add_argument('--force', action='store_true',
         help='Re-run hmmsearch even if <output>/pfam.domtbl already exists')
 
+    # build-pwm-refs
+    p = sub_parsers.add_parser('build-pwm-refs',
+        help='Stage A: download cisBP+JASPAR, extract reference DBDs, cache the reference store')
+    p.add_argument('--refs', default='data/pwms/_refs', help='Reference store dir (default: data/pwms/_refs)')
+    p.add_argument('-m', '--pfam', default='data/pfam/Pfam-A.hmm')
+    p.add_argument('-c', '--cpu', type=int, default=8)
+    p.add_argument('--no-cisbp', action='store_true')
+    p.add_argument('--no-jaspar', action='store_true')
+    p.add_argument('--refresh', action='store_true', help='Re-download even if present')
+
+    # map-pwm
+    p = sub_parsers.add_parser('map-pwm',
+        help='Stage B: map a species TF FASTA to reference motifs via DBD %%ID (no network)')
+    p.add_argument('-f', '--proteins', required=True, help='Species TF protein FASTA')
+    p.add_argument('-o', '--output', required=True, help='Output dir, e.g. data/pwms/cm_pwms')
+    p.add_argument('--refs', default='data/pwms/_refs')
+    p.add_argument('--domtbl', default=None, help='Reuse a find-tf pfam.domtbl (else run hmmsearch)')
+    p.add_argument('--threshold-mode', default='family', choices=['family', 'global'])
+    p.add_argument('--threshold', type=float, default=0.70, help='Global %%ID cutoff (global mode)')
+    p.add_argument('--min-cov', type=float, default=0.8, help='Min DBD coverage for a blast hit')
+    p.add_argument('--blastp', default=None)
+    p.add_argument('--makeblastdb', default=None)
+    p.add_argument('-m', '--pfam', default='data/pfam/Pfam-A.hmm')
+    p.add_argument('-c', '--cpu', type=int, default=8)
+
     # ipsae
     p = sub_parsers.add_parser(
         'ipsae',
@@ -395,6 +420,26 @@ def _cmd_find_tf(args):
     )
 
 
+def _cmd_build_pwm_refs(args):
+    from boltzscan.pwmmap.refs import build_reference_db
+    store = build_reference_db(refs_dir=args.refs, pfam=args.pfam, cpu=args.cpu,
+                               refresh=args.refresh,
+                               include_cisbp=not args.no_cisbp,
+                               include_jaspar=not args.no_jaspar)
+    print(f"Reference store ready at {store.root}")
+
+
+def _cmd_map_pwm(args):
+    from boltzscan.pwmmap.mapper import map_species
+    s = map_species(species_fasta=args.proteins, out_dir=args.output, refs_dir=args.refs,
+                    domtbl=args.domtbl, threshold_mode=args.threshold_mode,
+                    threshold=args.threshold, min_cov=args.min_cov,
+                    blastp=args.blastp, makeblastdb=args.makeblastdb,
+                    pfam=args.pfam, cpu=args.cpu)
+    print(f"Wrote {s.out_dir}/tf2pwms.json "
+          f"({s.n_mapped}/{s.n_species_tfs} TFs mapped, {s.n_motifs} motifs)")
+
+
 def _cmd_ipsae(args):
     from boltzscan.utils.ipsae_score import print_ipsae_warnings, score_ipsae_table
 
@@ -502,6 +547,8 @@ _DISPATCH = {
     'fimo2boltz': _cmd_fimo2boltz,
     'hit2fasta': _cmd_candidate_tf_fasta,
     'find-tf': _cmd_find_tf,
+    'build-pwm-refs': _cmd_build_pwm_refs,
+    'map-pwm': _cmd_map_pwm,
     'ipsae': _cmd_ipsae,
     'txt2meme': _cmd_txt2meme,
     'esm-embed': _cmd_esm_embed,
