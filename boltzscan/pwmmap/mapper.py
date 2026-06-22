@@ -8,6 +8,7 @@ from pathlib import Path
 from boltzscan.pwmmap import dbd, align
 from boltzscan.pwmmap.refs import load_ref_store, load_ref_index
 from boltzscan.pwmmap.thresholds import cutoff_for
+from boltzscan.pwmmap.cluster import load_clusters
 
 
 @dataclass
@@ -25,13 +26,15 @@ def _blast(query_fasta, store, blastp, makeblastdb, cpu, min_cov, work_dir):
 
 def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
                 threshold_mode="family", threshold=0.70, min_cov=0.8,
-                blastp=None, makeblastdb=None, pfam=None, cpu=8):
+                blastp=None, makeblastdb=None, pfam=None, cpu=8,
+                collapse_clusters=False):
     pfam = pfam or dbd.DEFAULT_PFAM
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     txt_dir = out_dir/"txt"; meme_dir = out_dir/"meme"
     txt_dir.mkdir(exist_ok=True); meme_dir.mkdir(exist_ok=True)
     store = load_ref_store(refs_dir)
     index = load_ref_index(refs_dir)            # dbd_seq_id -> row(family, motif_ids,...)
+    clusters = load_clusters(refs_dir) if collapse_clusters else {}
     bp, mk = align.resolve_blast_bins(blastp, makeblastdb)
 
     recs = dbd.extract_dbds(species_fasta, domtbl=domtbl, pfam=pfam, cpu=cpu, work_dir=out_dir)
@@ -41,8 +44,8 @@ def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
 
     hits = _blast(sp_dbd_fa, store, bp, mk, cpu, min_cov, out_dir)
 
-    tf2motifs = defaultdict(set)
-    report = [("species_tf", "pfam_acc", "ref_id", "source", "species", "pct_id", "motif_id")]
+    # per TF: motif (or its cluster representative) -> best (pct_id, ref row)
+    tf_motif = defaultdict(dict)
     for h in hits:
         row = index.get(h.ref_dbd_id)
         if not row:
@@ -53,12 +56,20 @@ def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
         for m in row["motif_ids"].split(";"):
             if not m:
                 continue
-            tf2motifs[h.query_tf].add(m)
-            report.append((h.query_tf, h.query_pfam, row["ref_id"], row["source"],
-                           row["species"], f"{h.pct_id:.3f}", m))
+            key = clusters.get(m, m)            # collapse to cluster rep when enabled
+            cur = tf_motif[h.query_tf].get(key)
+            if cur is None or h.pct_id > cur[0]:
+                tf_motif[h.query_tf][key] = (h.pct_id, row["ref_id"], row["source"],
+                                             row["species"], h.query_pfam)
 
-    # write tf2pwms.json + copy matched motif files from the store
-    tf2pwms = {tf: sorted(ms) for tf, ms in tf2motifs.items()}
+    # write tf2pwms.json + report (best ref per kept motif) + copy motif files
+    report = [("species_tf", "pfam_acc", "ref_id", "source", "species", "pct_id", "motif_id")]
+    tf2pwms = {}
+    for tf, motifs in tf_motif.items():
+        tf2pwms[tf] = sorted(motifs)
+        for m, (pid, ref_id, source, species, pfam_acc) in sorted(
+                motifs.items(), key=lambda kv: -kv[1][0]):
+            report.append((tf, pfam_acc, ref_id, source, species, f"{pid:.3f}", m))
     (out_dir/"tf2pwms.json").write_text(json.dumps(tf2pwms, indent=2))
     needed = {m for ms in tf2pwms.values() for m in ms}
     for m in needed:

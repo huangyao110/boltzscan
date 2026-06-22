@@ -15,6 +15,26 @@ def _make_store(tmp_path):
     return root
 
 
+def test_collapse_clusters_uses_representative(tmp_path, monkeypatch):
+    root = _make_store(tmp_path)
+    # cluster map: M001_3.00 collapses to representative REP9
+    (root/"motif_clusters.tsv").write_text(
+        "motif_id\tfamily\trepresentative_id\n"
+        "M001_3.00\tbHLH\tREP9\n")
+    for ext in ("txt", "meme"):
+        (root/"motif_store"/ext/f"REP9.{ext}").write_text("x")
+    sp = tmp_path/"cm.fasta"; sp.write_text(">CM1\nMKRAHHWXYZ\n")
+    monkeypatch.setattr(mapper.dbd, "extract_dbds",
+        lambda *a, **k: [DbdRecord("CM1","PF00010","bHLH",1,6,"MKRAHH")])
+    monkeypatch.setattr(mapper, "_blast",
+        lambda *a, **k: [align.Hit("CM1","PF00010","cisbp:G1__PF00010__0","PF00010",0.95)])
+    mapper.map_species(sp, tmp_path/"cm_pwms", refs_dir=root,
+                       threshold_mode="family", collapse_clusters=True)
+    j = json.loads((tmp_path/"cm_pwms"/"tf2pwms.json").read_text())
+    assert j["CM1"] == ["REP9"]                       # collapsed to cluster rep
+    assert (tmp_path/"cm_pwms"/"txt"/"REP9.txt").exists()
+
+
 def test_map_species_transfers_motif_above_threshold(tmp_path, monkeypatch):
     root = _make_store(tmp_path)
     sp = tmp_path/"cm.fasta"; sp.write_text(">CM1\nMKRAHHWXYZ\n")

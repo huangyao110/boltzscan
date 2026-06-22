@@ -221,6 +221,17 @@ def _build_parser():
     p.add_argument('--makeblastdb', default=None)
     p.add_argument('-m', '--pfam', default=None)
     p.add_argument('-c', '--cpu', type=int, default=8)
+    p.add_argument('--collapse-clusters', action='store_true',
+        help='Collapse transferred motifs to cluster representatives (needs cluster-motifs first)')
+
+    # cluster-motifs
+    p = sub_parsers.add_parser('cluster-motifs',
+        help='Cluster reference motifs per family (Tomtom) into a non-redundant set -> motif_clusters.tsv')
+    p.add_argument('--refs', default='data/pwms/_refs', help='Reference store dir')
+    p.add_argument('--qthresh', type=float, default=0.05,
+        help='Tomtom q-value cutoff for merging motifs (default: 0.05)')
+    p.add_argument('--tomtom', default=None, help='Path to tomtom (default: PATH or the meme conda env)')
+    p.add_argument('-c', '--cpu', type=int, default=8, help='Families clustered in parallel (default: 8)')
 
     # ipsae
     p = sub_parsers.add_parser(
@@ -435,9 +446,18 @@ def _cmd_map_pwm(args):
                     domtbl=args.domtbl, threshold_mode=args.threshold_mode,
                     threshold=args.threshold, min_cov=args.min_cov,
                     blastp=args.blastp, makeblastdb=args.makeblastdb,
-                    pfam=args.pfam, cpu=args.cpu)
+                    pfam=args.pfam, cpu=args.cpu,
+                    collapse_clusters=args.collapse_clusters)
     print(f"Wrote {s.out_dir}/tf2pwms.json "
           f"({s.n_mapped}/{s.n_species_tfs} TFs mapped, {s.n_motifs} motifs)")
+
+
+def _cmd_cluster_motifs(args):
+    from boltzscan.pwmmap.cluster import cluster_reference_motifs
+    s = cluster_reference_motifs(refs_dir=args.refs, tomtom=args.tomtom,
+                                 qthresh=args.qthresh, cpu=args.cpu)
+    print(f"Wrote {s.clusters_tsv} "
+          f"({s.n_motifs} motifs -> {s.n_clusters} clusters across {s.n_families} families)")
 
 
 def _cmd_ipsae(args):
@@ -549,6 +569,7 @@ _DISPATCH = {
     'find-tf': _cmd_find_tf,
     'build-pwm-refs': _cmd_build_pwm_refs,
     'map-pwm': _cmd_map_pwm,
+    'cluster-motifs': _cmd_cluster_motifs,
     'ipsae': _cmd_ipsae,
     'txt2meme': _cmd_txt2meme,
     'esm-embed': _cmd_esm_embed,
