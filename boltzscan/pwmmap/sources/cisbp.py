@@ -32,17 +32,38 @@ def _download_zip(url, dest_dir):
     return dest_dir
 
 
+def _extract_local_zip(zip_path):
+    """Extract a local .zip in place (cisBP wraps its .txt files in inner zips)."""
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(Path(zip_path).parent)
+
+
 def download_cisbp(dest, refresh=False):
+    """Return (TF_Information.txt path, dir containing M*.txt PWMs).
+
+    The cisBP entire-dataset archives are nested: TF_Information.zip contains
+    inner *.txt.zip files, and PWMs.zip unpacks to a pwms/ subdir of M*.txt.
+    """
     dest = Path(dest)
+    tf_dir = dest / "tf_information"
+    pwms_root = dest / "pwms"
+
     tf_info = next(dest.glob("**/TF_Information.txt"), None)
-    pwms_dir = next((p for p in dest.glob("**/pwms_all_motifs") if p.is_dir()), None) \
-        or next((p for p in dest.glob("**/pwms*") if p.is_dir()), None)
     if refresh or tf_info is None:
-        _download_zip(TF_INFO_URL, dest / "tf_information")
-        tf_info = next((dest / "tf_information").glob("**/TF_Information.txt"))
-    if refresh or pwms_dir is None:
-        _download_zip(PWMS_URL, dest / "pwms")
-        pwms_dir = dest / "pwms"
+        _download_zip(TF_INFO_URL, tf_dir)                       # outer -> inner *.txt.zip
+        inner = next(tf_dir.glob("**/TF_Information.txt.zip"), None)
+        if inner is not None:
+            _extract_local_zip(inner)                            # inner -> TF_Information.txt
+        tf_info = next(tf_dir.glob("**/TF_Information.txt"))
+
+    pwm_txt = next(pwms_root.glob("**/M*.txt"), None) if pwms_root.exists() else None
+    if refresh or pwm_txt is None:
+        _download_zip(PWMS_URL, pwms_root)
+        for z in list(pwms_root.glob("**/*.zip")):              # tolerate nested zips
+            _extract_local_zip(z)
+        pwm_txt = next(pwms_root.glob("**/M*.txt"))
+    pwms_dir = pwm_txt.parent                                    # the actual dir of M*.txt
+
     return tf_info, pwms_dir
 
 
