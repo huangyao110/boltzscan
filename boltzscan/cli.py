@@ -233,6 +233,15 @@ def _build_parser():
     p.add_argument('--tomtom', default=None, help='Path to tomtom (default: PATH or the meme conda env)')
     p.add_argument('-c', '--cpu', type=int, default=8, help='Families clustered in parallel (default: 8)')
 
+    # cpg-islands
+    p = sub_parsers.add_parser('cpg-islands',
+        help='Scan a promoter FASTA for CpG islands (cisdb for CpG-binding/CXXC factors, e.g. DDR1)')
+    p.add_argument('-f', '--fasta', required=True, help='Promoter FASTA')
+    p.add_argument('-o', '--output', required=True, help='Output dir (cpg_per_promoter.tsv, cpg_islands.bed, cpg_target_genes.txt)')
+    p.add_argument('--window', type=int, default=200, help='Min island length / window bp (default: 200)')
+    p.add_argument('--min-gc', type=float, default=0.5, help='Min GC fraction (default: 0.5)')
+    p.add_argument('--min-oe', type=float, default=0.6, help='Min observed/expected CpG ratio (default: 0.6)')
+
     # ipsae
     p = sub_parsers.add_parser(
         'ipsae',
@@ -461,6 +470,15 @@ def _cmd_cluster_motifs(args):
           f"across {s.n_families} families; {s.n_motifs} total in map)")
 
 
+def _cmd_cpg_islands(args):
+    from boltzscan.fimocistarget.cpg import scan_promoters_for_cpg
+    s = scan_promoters_for_cpg(args.fasta, args.output, window=args.window,
+                               min_gc=args.min_gc, min_oe=args.min_oe)
+    print(f"Wrote {s.out_dir} "
+          f"({s.n_with_island}/{s.n_promoters} promoters with a CpG island, "
+          f"{s.n_islands} islands)")
+
+
 def _cmd_ipsae(args):
     from boltzscan.utils.ipsae_score import print_ipsae_warnings, score_ipsae_table
 
@@ -571,6 +589,7 @@ _DISPATCH = {
     'build-pwm-refs': _cmd_build_pwm_refs,
     'map-pwm': _cmd_map_pwm,
     'cluster-motifs': _cmd_cluster_motifs,
+    'cpg-islands': _cmd_cpg_islands,
     'ipsae': _cmd_ipsae,
     'txt2meme': _cmd_txt2meme,
     'esm-embed': _cmd_esm_embed,
