@@ -62,13 +62,22 @@ def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
                 tf_motif[h.query_tf][key] = (h.pct_id, row["ref_id"], row["source"],
                                              row["species"], h.query_pfam)
 
-    # write tf2pwms.json + report (best ref per kept motif) + copy motif files
+    # write tf2pwms.json + report (best ref per kept motif) + copy motif files.
+    # Keep only motifs that have a scannable MEME PWM in the store — cisBP ships
+    # some empty/header-only PWMs (no usable matrix); those must not appear in the
+    # output (they would be dead entries for FIMO/cisTarget downstream).
+    def _scannable(m):
+        return (Path(store.motif_meme_dir)/f"{m}.meme").exists()
+
     report = [("species_tf", "pfam_acc", "ref_id", "source", "species", "pct_id", "motif_id")]
     tf2pwms = {}
     for tf, motifs in tf_motif.items():
-        tf2pwms[tf] = sorted(motifs)
+        kept = {m: v for m, v in motifs.items() if _scannable(m)}
+        if not kept:
+            continue
+        tf2pwms[tf] = sorted(kept)
         for m, (pid, ref_id, source, species, pfam_acc) in sorted(
-                motifs.items(), key=lambda kv: -kv[1][0]):
+                kept.items(), key=lambda kv: -kv[1][0]):
             report.append((tf, pfam_acc, ref_id, source, species, f"{pid:.3f}", m))
     (out_dir/"tf2pwms.json").write_text(json.dumps(tf2pwms, indent=2))
     needed = {m for ms in tf2pwms.values() for m in ms}
