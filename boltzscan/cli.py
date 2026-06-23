@@ -242,6 +242,19 @@ def _build_parser():
     p.add_argument('--min-gc', type=float, default=0.5, help='Min GC fraction (default: 0.5)')
     p.add_argument('--min-oe', type=float, default=0.6, help='Min observed/expected CpG ratio (default: 0.6)')
 
+    # predict
+    p = sub_parsers.add_parser('predict',
+        help='Predict protein-DNA complexes from a YAML input dir, choosing --engine boltz or esmfold')
+    p.add_argument('-i', '--input-dir', required=True, help='Directory of Boltz-style input YAMLs')
+    p.add_argument('-o', '--output', required=True, help='Output dir (predictions/<name>/...cif + confidence json)')
+    p.add_argument('-e', '--engine', default='boltz', choices=['boltz', 'esmfold'],
+        help='Inference engine (default: boltz)')
+    p.add_argument('-m', '--model', default='boltz_ode',
+        help='boltz engine model: boltz_ode|boltz1|boltz2 (ignored for esmfold)')
+    p.add_argument('--sampling-steps', type=int, default=None,
+        help='Sampling steps (default: boltz 2, esmfold 50)')
+    p.add_argument('--seed', type=int, default=42)
+
     # ipsae
     p = sub_parsers.add_parser(
         'ipsae',
@@ -470,6 +483,20 @@ def _cmd_cluster_motifs(args):
           f"across {s.n_families} families; {s.n_motifs} total in map)")
 
 
+def _cmd_predict(args):
+    from boltzscan.predict.runners import run_boltz, run_esmfold
+    if args.engine == 'boltz':
+        steps = args.sampling_steps if args.sampling_steps is not None else 2
+        rc = run_boltz(args.input_dir, args.output, model=args.model,
+                       sampling_steps=steps, seed=args.seed)
+    else:
+        steps = args.sampling_steps if args.sampling_steps is not None else 50
+        rc = run_esmfold(args.input_dir, args.output, sampling_steps=steps, seed=args.seed)
+    if rc != 0:
+        raise SystemExit(f"{args.engine} prediction exited with code {rc}")
+    print(f"{args.engine} prediction done -> {args.output}")
+
+
 def _cmd_cpg_islands(args):
     from boltzscan.fimocistarget.cpg import scan_promoters_for_cpg
     s = scan_promoters_for_cpg(args.fasta, args.output, window=args.window,
@@ -590,6 +617,7 @@ _DISPATCH = {
     'map-pwm': _cmd_map_pwm,
     'cluster-motifs': _cmd_cluster_motifs,
     'cpg-islands': _cmd_cpg_islands,
+    'predict': _cmd_predict,
     'ipsae': _cmd_ipsae,
     'txt2meme': _cmd_txt2meme,
     'esm-embed': _cmd_esm_embed,
