@@ -54,7 +54,8 @@ def _build_parser():
     p.add_argument('-c', '--cpus', type=int, default=1, help='Number of CPU cores to use (default: 1)')
 
     # promoter
-    p = sub_parsers.add_parser('promoter', help='Extract promoter regions from genome using GFF annotations')
+    p = sub_parsers.add_parser('promoter',
+        help='Extract promoter regions from genome+GFF (FASTA, and/or BED via --format)')
     p.add_argument('-gff', '--gff', required=False,
         default='./odata/Rosa_chinensis/Rosa_chinensis.RchiOBHm-V2.60.gff3',
         help='Input GFF3 annotation file (can be .gz). Assumes ### gene separator or groups implicitly.')
@@ -62,8 +63,10 @@ def _build_parser():
         default='./odata/Rosa_chinensis/Rosa_chinensis.RchiOBHm-V2.dna_sm.toplevel.fa',
         help='Input Genome FASTA file (can be .gz).')
     p.add_argument('-o', '--output', required=False,
-        default='./Rosa_chinensis_promoter.fasta',
-        help='Output FASTA file name (all promoters written here).')
+        default='./Rosa_chinensis_promoter',
+        help='Output prefix: writes <prefix>.fasta and (with --format both) <prefix>.bed')
+    p.add_argument('-f', '--format', default='both', choices=['fasta', 'both'],
+        help='fasta = promoter FASTA only; both = promoter BED + FASTA (default: both)')
     p.add_argument('-u', '--upstream', type=int, default=2000, help='Bases UPSTREAM of CDS anchor (will be uppercase).')
     p.add_argument('-d', '--downstream', type=int, default=200, help='Bases DOWNSTREAM of CDS anchor, including anchor position (will be lowercase).')
 
@@ -77,20 +80,6 @@ def _build_parser():
         help='Output BED file path')
     p.add_argument('-t', '--type', default='gene', help='Feature type to extract (default: gene)')
     p.add_argument('-n', '--name', default='ID', help='Attribute field to use as name (default: ID)')
-
-    # promoter-both
-    p = sub_parsers.add_parser('promoter-both', help='Extract promoter regions to both BED and FASTA files')
-    p.add_argument('-gff', '--gff', required=False,
-        default='./odata/Rosa_chinensis/Rosa_chinensis.RchiOBHm-V2.60.gff3',
-        help='Input GFF3 annotation file (can be .gz). Assumes ### gene separator or groups implicitly.')
-    p.add_argument('-g', '--genome', required=False,
-        default='./odata/Rosa_chinensis/Rosa_chinensis.RchiOBHm-V2.dna_sm.toplevel.fa',
-        help='Input Genome FASTA file (can be .gz).')
-    p.add_argument('-o', '--output', required=False,
-        default='./Rosa_chinensis_promoter',
-        help='Output file prefix, will generate .bed and .fasta files')
-    p.add_argument('-u', '--upstream', type=int, default=2000, help='Bases UPSTREAM of CDS anchor (will be uppercase).')
-    p.add_argument('-d', '--downstream', type=int, default=200, help='Bases DOWNSTREAM of CDS anchor, including anchor position (will be lowercase).')
 
     # boltzscan
     p = sub_parsers.add_parser('boltzscan', help='Run BoltzScan on FASTA files')
@@ -483,6 +472,19 @@ def _cmd_cluster_motifs(args):
           f"across {s.n_families} families; {s.n_motifs} total in map)")
 
 
+def _cmd_promoter(args):
+    """Unified promoter extraction: --format fasta (FASTA only) or both (BED+FASTA)."""
+    if args.format == 'both':
+        print(f"Extracting promoter BED+FASTA using GFF: {args.gff}")
+        extract_promoters_both(args)            # writes <output>.bed + <output>.fasta
+    else:
+        import copy
+        a = copy.copy(args)
+        a.output = args.output if args.output.endswith('.fasta') else args.output + '.fasta'
+        print(f"Extracting promoter FASTA using GFF: {args.gff}")
+        extract_promoters(a)                    # writes <output>.fasta
+
+
 def _cmd_predict(args):
     from boltzscan.predict.runners import run_boltz, run_esmfold
     if args.engine == 'boltz':
@@ -603,11 +605,9 @@ def _cmd_valid(args):
 
 _DISPATCH = {
     'msa': _cmd_msa,
-    'promoter': lambda a: (print(f"Extracting promoter regions using GFF: {a.gff}"), extract_promoters(a)),
+    'promoter': _cmd_promoter,
     'extract-bed': lambda a: (print(f"Extracting genomic regions from GFF: {a.input}"),
                               extract_bed_regions(a.input, a.output, a.type, a.name)),
-    'promoter-both': lambda a: (print(f"Extracting promoter regions to both BED and FASTA using GFF: {a.gff}"),
-                                extract_promoters_both(a)),
     'boltzscan': _cmd_boltzscan,
     'cistarg': _cmd_cistarg,
     'fimo2boltz': _cmd_fimo2boltz,
