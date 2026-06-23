@@ -5,7 +5,6 @@ Exposed as the `boltzscan` console script via pyproject.toml. The thin
 :func:`main` here.
 """
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
@@ -20,11 +19,6 @@ from boltzscan.utils.boltz_input import build_boltz_input_from_fimo
 
 __author__ = 'huangyao'
 __date__ = '2026-05-16'
-
-# Vendored Boltz CLI lives inside the package tree but is not a Python
-# submodule (it has its own pyproject); we shell out to its main.py.
-_PKG_ROOT = Path(__file__).resolve().parent
-_BOLTZ_MAIN = _PKG_ROOT / 'boltz' / 'src' / 'boltz' / 'main.py'
 
 
 def _build_parser():
@@ -80,19 +74,6 @@ def _build_parser():
         help='Output BED file path')
     p.add_argument('-t', '--type', default='gene', help='Feature type to extract (default: gene)')
     p.add_argument('-n', '--name', default='ID', help='Attribute field to use as name (default: ID)')
-
-    # boltzscan
-    p = sub_parsers.add_parser('boltzscan', help='Run BoltzScan on FASTA files')
-    p.add_argument('-fd', '--fasta_dir', required=True, help='Input FASTA file path')
-    p.add_argument('-od', '--output_dir', required=True, help='Output directory for BoltzScan results')
-    p.add_argument('--sampling_steps', type=int, default=2, help='Sampling steps for BoltzScan')
-    p.add_argument('-m', '--model_name', type=str, default='boltz_ode', required=True, help='Model name for BoltzScan')
-    p.add_argument('-or', '--override', type=str, default='',
-        help='Pass --override to boltz (any non-empty value enables it; rerun existing predictions)')
-    p.add_argument('-pt', '--preprocessing-threads', type=int, default=1,
-        help='CPU threads for the boltz preprocessing step (default: 1)')
-    p.add_argument('-nw', '--num-workers', type=int, default=2,
-        help='DataLoader workers during predict. High values (>8) often deadlock with CUDA. (default: 2)')
 
     # cistarg
     p = sub_parsers.add_parser(
@@ -243,6 +224,13 @@ def _build_parser():
     p.add_argument('--sampling-steps', type=int, default=None,
         help='Sampling steps (default: boltz 2, esmfold 50)')
     p.add_argument('--seed', type=int, default=42)
+    # boltz-engine-only knobs (ignored for esmfold)
+    p.add_argument('-pt', '--preprocessing-threads', type=int, default=1,
+        help='[boltz] CPU threads for boltz preprocessing (default: 1)')
+    p.add_argument('-nw', '--num-workers', type=int, default=2,
+        help='[boltz] DataLoader workers during predict; high values often deadlock with CUDA (default: 2)')
+    p.add_argument('-or', '--override', action='store_true',
+        help='[boltz] rerun existing predictions (passes --override to boltz)')
 
     # ipsae
     p = sub_parsers.add_parser(
@@ -331,24 +319,6 @@ def _cmd_msa(args):
         print(f"MSA completed successfully. Results saved to: {args.output_dir}")
     else:
         print("MSA processing failed or no results generated.")
-
-
-def _cmd_boltzscan(args):
-    print(f"Running BoltzScan on FASTA files: {args.fasta_dir}")
-    cmd = [
-        sys.executable, str(_BOLTZ_MAIN), 'predict', args.fasta_dir,
-        '--out_dir', args.output_dir,
-        '--sampling_steps', str(args.sampling_steps),
-        '--seed', '42',
-        '--write_full_pae',
-        '--step_scale', '1.0',
-        '--preprocessing-threads', str(args.preprocessing_threads),
-        '--num_workers', str(args.num_workers),
-        '--model', args.model_name,
-    ]
-    if args.override:
-        cmd.append('--override')
-    subprocess.run(cmd)
 
 
 def _cmd_cistarg(args):
@@ -490,7 +460,9 @@ def _cmd_predict(args):
     if args.engine == 'boltz':
         steps = args.sampling_steps if args.sampling_steps is not None else 2
         rc = run_boltz(args.input_dir, args.output, model=args.model,
-                       sampling_steps=steps, seed=args.seed)
+                       sampling_steps=steps, seed=args.seed,
+                       preprocessing_threads=args.preprocessing_threads,
+                       num_workers=args.num_workers, override=args.override)
     else:
         steps = args.sampling_steps if args.sampling_steps is not None else 50
         rc = run_esmfold(args.input_dir, args.output, sampling_steps=steps, seed=args.seed)
@@ -608,7 +580,6 @@ _DISPATCH = {
     'promoter': _cmd_promoter,
     'extract-bed': lambda a: (print(f"Extracting genomic regions from GFF: {a.input}"),
                               extract_bed_regions(a.input, a.output, a.type, a.name)),
-    'boltzscan': _cmd_boltzscan,
     'cistarg': _cmd_cistarg,
     'fimo2boltz': _cmd_fimo2boltz,
     'hit2fasta': _cmd_candidate_tf_fasta,

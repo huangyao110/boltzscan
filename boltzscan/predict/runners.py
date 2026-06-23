@@ -30,14 +30,19 @@ DEFAULT_ESMFOLD_PY = os.environ.get(
 
 
 def run_boltz(input_dir, out_dir, model="boltz_ode", sampling_steps=2,
-              seed=42, step_scale=1.0, python_exe=None):
+              seed=42, step_scale=1.0, preprocessing_threads=1, num_workers=2,
+              override=False, python_exe=None):
     py = python_exe or DEFAULT_BOLTZ_PY
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_BOLTZ_SRC) + os.pathsep + env.get("PYTHONPATH", "")
     cmd = [py, str(_BOLTZ_MAIN), "predict", str(input_dir),
            "--out_dir", str(out_dir), "--model", model,
            "--sampling_steps", str(sampling_steps), "--seed", str(seed),
-           "--write_full_pae", "--step_scale", str(step_scale)]
+           "--write_full_pae", "--step_scale", str(step_scale),
+           "--preprocessing-threads", str(preprocessing_threads),
+           "--num_workers", str(num_workers)]
+    if override:
+        cmd.append("--override")
     print("[predict:boltz] " + " ".join(cmd), file=sys.stderr)
     return subprocess.run(cmd, env=env).returncode
 
