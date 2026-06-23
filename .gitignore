@@ -25,6 +25,7 @@ rose_grn.tar.gz
 # Vendored externals (each has its own repository; install separately)
 boltzscan/boltz/
 boltzscan/cropd2p/disopred/
+boltzscan/esm/
 
 # Python build artifacts
 __pycache__/
@@ -34,3 +35,6 @@ build/
 dist/
 .pytest_cache/
 .ipynb_checkpoints/
+# experimental scratch + big artifacts (not part of the package)
+scratch/
+*.log

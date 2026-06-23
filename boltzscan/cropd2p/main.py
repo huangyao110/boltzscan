@@ -18,11 +18,11 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 # 推荐将项目内的模块导入放在第三方库之后
-from cropdock.a3m import crop_a3m_file
-from cropdock.run_msa import run_msa_mutil
-from cropdock.structure import atom_struct_2_seq
-from cropdock.utils import write_fasta
-from boltzscan.cropd2p.parse_cropseq_res import get_domain_range, get_sites_range
+from boltzscan.cropd2p.a3m import crop_a3m_file
+from boltzscan.cropd2p.run_msa import run_msa_mutil
+from boltzscan.cropd2p.structure import atom_struct_2_seq
+from boltzscan.cropd2p.utils import write_fasta
+from boltzscan.cropd2p.parse_cropseq_resdct import get_domain_range, get_sites_range
 
 # --- Placeholder functions for self-contained execution ---
 # In your actual project, you would use the imports above.
