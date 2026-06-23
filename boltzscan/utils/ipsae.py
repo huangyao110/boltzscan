@@ -322,7 +322,7 @@ token_mask=list()
 residue_set= {"ALA", "ARG", "ASN", "ASP", "CYS",
               "GLN", "GLU", "GLY", "HIS", "ILE",
               "LEU", "LYS", "MET", "PHE", "PRO",
-              "SER", "THR", "TRP", "TYR", "VAL",
+              "SER", "THR", "TRP", "TYR", "VAL", "UNK",
               "DA", "DC", "DT", "DG", "A", "C", "U", "G"}
 
 nuc_residue_set = {"DA", "DC", "DT", "DG", "A", "C", "U", "G"}
