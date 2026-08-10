@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from urllib.parse import parse_qs, quote, urlparse
-from urllib.request import Request, urlopen
 
 from boltzscan import __version__
 from boltzscan.pwmmap.pfam import (
@@ -234,6 +235,67 @@ def _format_size(size_bytes):
     return f'{size_bytes} bytes'
 
 
+def _gsettings_value(schema, key):
+    executable = shutil.which('gsettings')
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, 'get', schema, key],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip().strip("'").strip('"')
+
+
+def _desktop_https_proxy():
+    """Read a manual GNOME proxy without making it a hard dependency."""
+    if _gsettings_value('org.gnome.system.proxy', 'mode') != 'manual':
+        return None
+    for schema in ('org.gnome.system.proxy.https', 'org.gnome.system.proxy.http'):
+        host = _gsettings_value(schema, 'host')
+        port = _gsettings_value(schema, 'port')
+        if host and port and str(port).isdigit() and int(port) > 0:
+            return f'http://{host}:{port}'
+    return None
+
+
+def _wget_environment():
+    """Return a wget environment with explicit/env/desktop proxy precedence."""
+    environment = os.environ.copy()
+    for lower, upper in (
+        ('http_proxy', 'HTTP_PROXY'),
+        ('https_proxy', 'HTTPS_PROXY'),
+        ('no_proxy', 'NO_PROXY'),
+    ):
+        if not environment.get(lower) and environment.get(upper):
+            environment[lower] = environment[upper]
+
+    explicit = environment.get('BOLTZSCAN_HTTPS_PROXY')
+    if explicit:
+        environment['https_proxy'] = explicit
+        environment['http_proxy'] = explicit
+        return environment, 'BOLTZSCAN_HTTPS_PROXY'
+    if environment.get('https_proxy'):
+        return environment, 'environment'
+    if environment.get('http_proxy'):
+        environment['https_proxy'] = environment['http_proxy']
+        return environment, 'environment'
+
+    desktop_proxy = _desktop_https_proxy()
+    if desktop_proxy:
+        environment['http_proxy'] = desktop_proxy
+        environment['https_proxy'] = desktop_proxy
+        return environment, 'desktop settings'
+    return environment, None
+
+
 def _download(url, output, *, progress=None):
     report = progress or (lambda message: None)
     parsed = urlparse(str(url))
@@ -248,55 +310,41 @@ def _download(url, output, *, progress=None):
         if urlparse(download_url).hostname == 'drive.usercontent.google.com'
         else urlparse(download_url).hostname or 'download server'
     )
-    report(
-        f'Connecting to {source} '
-        f'(timeout: {DOWNLOAD_TIMEOUT_SECONDS} seconds)...'
-    )
-    request = Request(
-        download_url,
-        headers={'User-Agent': f'BoltzScan/{__version__}'},
-    )
+    wget = shutil.which('wget')
+    if wget is None:
+        raise FileNotFoundError(
+            'wget is required to download PWM references; install wget or pass '
+            'a local archive with `install-pwm-refs --url FILE`.'
+        )
+    environment, proxy_source = _wget_environment()
+    report(f'Downloading from {source} with wget...')
+    if proxy_source:
+        report(f'wget proxy: {proxy_source}')
+    command = [
+        wget,
+        f'--timeout={DOWNLOAD_TIMEOUT_SECONDS}',
+        '--tries=3',
+        '--retry-connrefused',
+        '--quiet',
+        '--show-progress',
+        '--progress=bar:force:noscroll',
+        f'--user-agent=BoltzScan/{__version__}',
+        '--output-document',
+        str(output),
+        str(download_url),
+    ]
     try:
-        with urlopen(
-            request,
-            timeout=DOWNLOAD_TIMEOUT_SECONDS,
-        ) as response, Path(output).open('wb') as handle:
-            try:
-                total_bytes = int(response.headers.get('Content-Length', 0))
-            except (TypeError, ValueError):
-                total_bytes = 0
-            if total_bytes:
-                report(f'Download started: {_format_size(total_bytes)}')
-            else:
-                report('Download started: server did not report the file size')
-
-            downloaded = 0
-            next_percent = 10
-            next_bytes = 10 * 1024 * 1024
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                downloaded += len(chunk)
-                if total_bytes:
-                    percent = min(100, downloaded * 100 // total_bytes)
-                    while percent >= next_percent:
-                        report(
-                            f'Download: {next_percent:3d}% '
-                            f'({_format_size(downloaded)} / {_format_size(total_bytes)})'
-                        )
-                        next_percent += 10
-                elif downloaded >= next_bytes:
-                    report(f'Downloaded: {_format_size(downloaded)}')
-                    next_bytes += 10 * 1024 * 1024
-            report(f'Download complete: {_format_size(downloaded)}')
-    except OSError as exc:
+        subprocess.run(command, check=True, env=environment)
+    except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError(
-            f'Cannot download the PWM reference release from {source}: {exc}. '
-            'The remote host may be blocked or unavailable. Download the tar.gz in a '
-            'browser, then pass its local path with `install-pwm-refs --url FILE`.'
+            f'wget could not download the PWM reference release from {source}. '
+            'Check the network/proxy, set BOLTZSCAN_HTTPS_PROXY if needed, or pass '
+            'a local archive with `install-pwm-refs --url FILE`.'
         ) from exc
+    output = Path(output)
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError(f'wget produced an empty PWM reference archive: {output}')
+    report(f'Download complete: {_format_size(output.stat().st_size)}')
 
 
 def _safe_extract_runtime_archive(archive, destination):

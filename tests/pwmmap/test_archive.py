@@ -1,5 +1,6 @@
 import json
-from io import BytesIO
+from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -89,17 +90,26 @@ def test_google_drive_share_url_is_converted_to_direct_download():
     assert _download_url('/tmp/local-release.tar.gz') == '/tmp/local-release.tar.gz'
 
 
-def test_remote_download_reports_connection_and_progress(tmp_path, monkeypatch):
+def test_remote_download_uses_wget_and_reports_completion(tmp_path, monkeypatch):
     payload = b'x' * 2048
-
-    class Response(BytesIO):
-        headers = {'Content-Length': str(len(payload))}
-
+    monkeypatch.setattr(
+        archive_module.shutil,
+        'which',
+        lambda name: '/usr/bin/wget' if name == 'wget' else None,
+    )
     monkeypatch.setattr(
         archive_module,
-        'urlopen',
-        lambda request, timeout: Response(payload),
+        '_wget_environment',
+        lambda: ({'TEST_ENV': '1'}, 'desktop settings'),
     )
+    calls = []
+
+    def run_wget(command, *, check, env):
+        calls.append((command, check, env))
+        destination = Path(command[command.index('--output-document') + 1])
+        destination.write_bytes(payload)
+
+    monkeypatch.setattr(archive_module.subprocess, 'run', run_wget)
     progress = []
     output = tmp_path / 'download.tar.gz'
 
@@ -110,25 +120,54 @@ def test_remote_download_reports_connection_and_progress(tmp_path, monkeypatch):
     )
 
     assert output.read_bytes() == payload
-    assert progress[0].startswith('Connecting to example.org')
-    assert any(message.startswith('Download:  10%') for message in progress)
-    assert any(message.startswith('Download: 100%') for message in progress)
+    command, check, environment = calls[0]
+    assert check is True
+    assert environment == {'TEST_ENV': '1'}
+    assert command[0] == '/usr/bin/wget'
+    assert f'--timeout={archive_module.DOWNLOAD_TIMEOUT_SECONDS}' in command
+    assert '--tries=3' in command
+    assert '--quiet' in command
+    assert '--show-progress' in command
+    assert '--progress=bar:force:noscroll' in command
+    assert command[-1] == 'https://example.org/release.tar.gz'
+    assert progress[0] == 'Downloading from example.org with wget...'
+    assert progress[1] == 'wget proxy: desktop settings'
     assert progress[-1] == 'Download complete: 2.0 KiB'
 
 
-def test_remote_download_times_out_with_an_offline_install_hint(tmp_path, monkeypatch):
-    calls = []
+def test_remote_download_failure_has_proxy_and_offline_hints(tmp_path, monkeypatch):
+    monkeypatch.setattr(archive_module.shutil, 'which', lambda name: '/usr/bin/wget')
+    monkeypatch.setattr(archive_module, '_wget_environment', lambda: ({}, None))
 
-    def timeout(request, *, timeout):
-        calls.append(timeout)
-        raise TimeoutError('timed out')
+    def fail_wget(command, *, check, env):
+        raise subprocess.CalledProcessError(4, command)
 
-    monkeypatch.setattr(archive_module, 'urlopen', timeout)
+    monkeypatch.setattr(archive_module.subprocess, 'run', fail_wget)
 
-    with pytest.raises(RuntimeError, match='install-pwm-refs --url FILE'):
+    with pytest.raises(RuntimeError, match='BOLTZSCAN_HTTPS_PROXY') as error:
         archive_module._download(
             'https://example.org/release.tar.gz',
             tmp_path / 'download.tar.gz',
         )
 
-    assert calls == [archive_module.DOWNLOAD_TIMEOUT_SECONDS]
+    assert 'install-pwm-refs --url FILE' in str(error.value)
+
+
+def test_wget_environment_uses_desktop_proxy_when_shell_has_none(monkeypatch):
+    for variable in (
+        'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+        'http_proxy', 'https_proxy', 'no_proxy',
+        'BOLTZSCAN_HTTPS_PROXY',
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(
+        archive_module,
+        '_desktop_https_proxy',
+        lambda: 'http://127.0.0.1:7897',
+    )
+
+    environment, source = archive_module._wget_environment()
+
+    assert environment['http_proxy'] == 'http://127.0.0.1:7897'
+    assert environment['https_proxy'] == 'http://127.0.0.1:7897'
+    assert source == 'desktop settings'

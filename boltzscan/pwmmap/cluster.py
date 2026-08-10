@@ -40,7 +40,7 @@ def resolve_tomtom(tomtom=None):
     if discovered:
         return discovered
     raise FileNotFoundError(
-        "Tomtom not found; run `boltzscan doctor --fix --profile refs-builder`"
+        "Tomtom not found; run `boltzscan doctor --fix`"
     )
 
 

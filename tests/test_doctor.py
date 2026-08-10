@@ -21,7 +21,7 @@ def test_doctor_cli_is_read_only_by_default(tmp_path):
 
     assert args.command == "doctor"
     assert args.fix is False
-    assert args.profile == "runtime"
+    assert not hasattr(args, "profile")
     assert args.refs == "shared/refs"
     assert _command_log_path(args) == tmp_path / "doctor.log"
 
@@ -55,13 +55,13 @@ def test_install_toolchain_uses_isolated_prefix_and_writes_manifest(tmp_path, mo
 
     def fake_run(command, *, check, env):
         calls.append((command, check, env))
-        for name in toolchain.PROFILE_EXECUTABLES["runtime"]:
+        for name in toolchain.TOOLCHAIN_EXECUTABLES:
             _executable(toolchain.managed_binary(name, tmp_path / "tools"))
 
     monkeypatch.setattr(toolchain.subprocess, "run", fake_run)
 
     result = toolchain.install_toolchain(
-        "runtime", tmp_path / "tools", report=lambda message: None,
+        tmp_path / "tools", report=lambda message: None,
     )
 
     command, check, environment = calls[0]
@@ -74,20 +74,14 @@ def test_install_toolchain_uses_isolated_prefix_and_writes_manifest(tmp_path, mo
     assert environment["MAMBA_ROOT_PREFIX"].startswith(str(tmp_path / "tools"))
 
     manifest = json.loads(result.manifest.read_text())
-    assert manifest["profile"] == "runtime"
     assert set(manifest["executables"]) == {
-        "blastp", "makeblastdb", "hmmsearch", "fimo",
+        "blastp", "makeblastdb", "hmmsearch", "fimo", "tomtom",
     }
 
 
-def test_refs_builder_profile_includes_tomtom():
-    assert "meme=5.5.7" in toolchain.PROFILE_PACKAGES["refs-builder"]
-    assert "tomtom" in toolchain.PROFILE_EXECUTABLES["refs-builder"]
-
-
-def test_runtime_profile_includes_official_fimo():
-    assert "meme=5.5.7" in toolchain.PROFILE_PACKAGES["runtime"]
-    assert "fimo" in toolchain.PROFILE_EXECUTABLES["runtime"]
+def test_toolchain_includes_fimo_and_tomtom():
+    assert "meme=5.5.7" in toolchain.TOOLCHAIN_PACKAGES
+    assert {"fimo", "tomtom"}.issubset(toolchain.TOOLCHAIN_EXECUTABLES)
 
 
 def test_vendored_inference_sources_are_available():

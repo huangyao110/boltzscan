@@ -16,7 +16,7 @@ from boltzscan.pwmmap.pfam import (
     validate_runtime_pfam,
 )
 from boltzscan.toolchain import (
-    PROFILE_EXECUTABLES,
+    TOOLCHAIN_EXECUTABLES,
     executable_version,
     install_toolchain,
     managed_tool_root,
@@ -81,16 +81,14 @@ def _vendored_source_checks():
         yield DoctorCheck(label, "OK" if available else "MISSING", detail)
 
 
-def _tool_checks(profile, tool_dir):
-    for name in PROFILE_EXECUTABLES[profile]:
+def _tool_checks(tool_dir):
+    for name in TOOLCHAIN_EXECUTABLES:
         executable = resolve_executable(name, tool_dir=tool_dir)
         if executable is None:
             yield DoctorCheck(
                 name,
                 "MISSING",
-                "not found; run `boltzscan doctor --fix"
-                + (" --profile refs-builder" if profile == "refs-builder" else "")
-                + "`",
+                "not found; run `boltzscan doctor --fix`",
                 fixable=True,
             )
             continue
@@ -140,13 +138,11 @@ def _data_checks(refs, pfam):
         yield DoctorCheck("Plant-TF Pfam", "OK", detail)
 
 
-def inspect_environment(*, profile="runtime", refs="data/pwms/_refs", pfam=None, tool_dir=None):
-    if profile not in PROFILE_EXECUTABLES:
-        raise ValueError(f"Unknown doctor profile: {profile}")
+def inspect_environment(*, refs="data/pwms/_refs", pfam=None, tool_dir=None):
     checks = tuple([
         *_python_checks(),
         *_vendored_source_checks(),
-        *_tool_checks(profile, tool_dir),
+        *_tool_checks(tool_dir),
         *_data_checks(refs, pfam),
     ])
     return DoctorSummary(checks, managed_tool_root(tool_dir))
@@ -167,12 +163,11 @@ def print_summary(summary: DoctorSummary):
         print("Result: environment is ready")
 
 
-def run_doctor(*, fix=False, profile="runtime", refs="data/pwms/_refs", pfam=None,
-               tool_dir=None, report=print):
+def run_doctor(*, fix=False, refs="data/pwms/_refs", pfam=None, tool_dir=None,
+               report=print):
     if fix:
-        install_toolchain(profile=profile, tool_dir=tool_dir, report=report)
+        install_toolchain(tool_dir=tool_dir, report=report)
     summary = inspect_environment(
-        profile=profile,
         refs=refs,
         pfam=pfam,
         tool_dir=tool_dir,

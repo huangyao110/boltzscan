@@ -53,12 +53,8 @@ boltzscan doctor
 creates a pinned BLAST+/HMMER/MEME Suite toolchain under the user's BoltzScan data
 directory; it does not use `sudo`, change the active Conda environment, or edit
 shell startup files. FIMO is supplied by that runtime toolchain; no Python
-MEME wrapper is installed. Reference maintainers and strict LOSO runs can also
-validate Tomtom with:
-
-```bash
-boltzscan doctor --fix --profile refs-builder
-```
+MEME wrapper is installed. Tomtom is included because `run --exclude-species`
+reclusters the retained PWMs to prevent target-species leakage.
 
 Override the managed location with `BOLTZSCAN_TOOL_DIR` or `doctor --tool-dir`.
 BoltzScan resolves an explicitly supplied executable first, then its managed
@@ -101,13 +97,19 @@ as described below. If the model environments use different names or paths,
 set `BOLTZSCAN_BOLTZ_PYTHON` and `BOLTZSCAN_ESMFOLD_PYTHON` to their Python
 executables.
 
-`boltzscan install-pwm-refs` downloads the built-in GitHub Release asset,
-verifies its fixed SHA256, and installs it at `data/pwms/_refs`. If that
-directory already contains a reference store, add `--replace`; the old store
-is moved to a timestamped backup. Developers can override both `--url` and
-`--sha256` to test another release. The install includes a pinned 70-profile
-plant-TF Pfam subset, so `find-tf`, `map-pwm`, and `run` work without a separate
-Pfam download after `doctor --fix` has installed HMMER.
+`boltzscan install-pwm-refs` calls the system `wget` downloader from Python,
+downloads the built-in GitHub Release asset, verifies its fixed SHA256, and
+installs it at `data/pwms/_refs`. There is no separate manual `wget` step. If
+that directory already contains a reference store, add `--replace`; the old
+store is moved to a timestamped backup. Developers can override both `--url`
+and `--sha256` to test another release. The install includes a pinned
+70-profile plant-TF Pfam subset, so `find-tf`, `map-pwm`, and `run` work without
+a separate Pfam download after `doctor --fix` has installed HMMER.
+
+For proxied networks, the downloader first uses `BOLTZSCAN_HTTPS_PROXY`, then
+the shell proxy variables, and finally the GNOME desktop manual proxy setting.
+For example, an explicit override is
+`BOLTZSCAN_HTTPS_PROXY=http://127.0.0.1:7897 boltzscan install-pwm-refs`.
 
 The release is mirrored from the maintainer's Google Drive by the verified
 `publish-pwm-refs.yml` workflow, so end users do not depend on Google Drive's

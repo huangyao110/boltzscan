@@ -24,14 +24,8 @@ from boltzscan import __version__
 
 
 TOOLCHAIN_VERSION = "2026.08"
-PROFILE_PACKAGES = {
-    "runtime": ("blast=2.16.0", "hmmer=3.4", "meme=5.5.7"),
-    "refs-builder": ("blast=2.16.0", "hmmer=3.4", "meme=5.5.7"),
-}
-PROFILE_EXECUTABLES = {
-    "runtime": ("blastp", "makeblastdb", "hmmsearch", "fimo"),
-    "refs-builder": ("blastp", "makeblastdb", "hmmsearch", "fimo", "tomtom"),
-}
+TOOLCHAIN_PACKAGES = ("blast=2.16.0", "hmmer=3.4", "meme=5.5.7")
+TOOLCHAIN_EXECUTABLES = ("blastp", "makeblastdb", "hmmsearch", "fimo", "tomtom")
 
 # Static, official micromamba release artifacts mirrored from conda-forge.
 # Only platforms on which the complete Bioconda toolchain is supported are
@@ -53,7 +47,6 @@ _MICROMAMBA_RELEASES = {
 class ToolchainInstall:
     root: Path
     prefix: Path
-    profile: str
     manager: Path
     manifest: Path
     executables: dict[str, Path]
@@ -223,33 +216,28 @@ def _probe_version(name: str, executable: Path) -> str:
     return next((line.strip() for line in output.splitlines() if line.strip()), "unknown")
 
 
-def install_toolchain(profile="runtime", tool_dir=None, *, report=print) -> ToolchainInstall:
+def install_toolchain(tool_dir=None, *, report=print) -> ToolchainInstall:
     """Create or update a private, pinned external-tool environment."""
-    if profile not in PROFILE_PACKAGES:
-        raise ValueError(f"Unknown toolchain profile: {profile}")
     root = managed_tool_root(tool_dir)
     prefix = managed_prefix(tool_dir)
     root.mkdir(parents=True, exist_ok=True)
     manager = find_package_manager(tool_dir, bootstrap=True, report=report)
     action = "install" if (prefix / "conda-meta" / "history").is_file() else "create"
-    command = _manager_command(manager, action, prefix, PROFILE_PACKAGES[profile])
-    report(
-        f"Installing BoltzScan {profile} toolchain in {prefix} "
-        f"with {manager.name}"
-    )
+    command = _manager_command(manager, action, prefix, TOOLCHAIN_PACKAGES)
+    report(f"Installing BoltzScan toolchain in {prefix} with {manager.name}")
     environment = os.environ.copy()
     environment.setdefault("MAMBA_ROOT_PREFIX", str(root / "mamba-root"))
     try:
         subprocess.run(command, check=True, env=environment)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
-            f"{manager.name} could not install the BoltzScan {profile} toolchain "
+            f"{manager.name} could not install the BoltzScan toolchain "
             f"(exit code {exc.returncode})"
         ) from exc
 
     executables = {
         name: managed_binary(name, tool_dir)
-        for name in PROFILE_EXECUTABLES[profile]
+        for name in TOOLCHAIN_EXECUTABLES
     }
     missing = [
         name for name, path in executables.items()
@@ -266,11 +254,10 @@ def install_toolchain(profile="runtime", tool_dir=None, *, report=print) -> Tool
         "schema_version": 1,
         "toolchain_version": TOOLCHAIN_VERSION,
         "boltzscan_version": __version__,
-        "profile": profile,
         "installed_at_utc": datetime.now(timezone.utc).isoformat(),
         "manager": str(manager),
         "prefix": str(prefix),
-        "packages": list(PROFILE_PACKAGES[profile]),
+        "packages": list(TOOLCHAIN_PACKAGES),
         "executables": {
             name: {
                 "path": str(path),
@@ -279,7 +266,7 @@ def install_toolchain(profile="runtime", tool_dir=None, *, report=print) -> Tool
             for name, path in executables.items()
         },
     }, indent=2) + "\n")
-    return ToolchainInstall(root, prefix, profile, manager, manifest, executables)
+    return ToolchainInstall(root, prefix, manager, manifest, executables)
 
 
 def executable_version(name: str, executable) -> str:

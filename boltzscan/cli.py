@@ -85,17 +85,13 @@ def _build_parser():
         epilog=(
             'Examples:\n'
             '  boltzscan doctor\n'
-            '  boltzscan doctor --fix\n'
-            '  boltzscan doctor --fix --profile refs-builder\n\n'
-            'The runtime profile includes FIMO. The refs-builder profile additionally '
-            'requires Tomtom for build-pwm-refs and LOSO PWM reclustering.'
+            '  boltzscan doctor --fix\n\n'
+            'The managed toolchain includes BLAST+, HMMER, FIMO, and Tomtom.'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--fix', action='store_true',
-        help='Install/update the selected external-tool profile (never uses sudo)')
-    p.add_argument('--profile', default='runtime', choices=['runtime', 'refs-builder'],
-        help='runtime: BLAST+/HMMER/FIMO; refs-builder: also require Tomtom')
+        help='Install/update the external toolchain (never uses sudo)')
     p.add_argument('--tool-dir', default=None,
         help='Managed toolchain directory (default: user data dir; or BOLTZSCAN_TOOL_DIR)')
     p.add_argument('--refs', default='data/pwms/_refs',
@@ -545,7 +541,6 @@ def _cmd_doctor(args):
     try:
         summary = run_doctor(
             fix=args.fix,
-            profile=args.profile,
             refs=args.refs,
             pfam=args.pfam,
             tool_dir=args.tool_dir,
@@ -774,7 +769,7 @@ def _cmd_install_pwm_refs(args):
             replace=args.replace,
             progress=lambda message: print(message, flush=True),
         )
-    except (FileExistsError, FileNotFoundError, OSError, ValueError) as exc:
+    except (FileExistsError, FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         raise SystemExit(f'boltzscan install-pwm-refs: {exc}') from None
     print(
         f"Installed PWM refs: {summary.n_dbd_rows} DBD rows, "
