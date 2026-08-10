@@ -101,7 +101,7 @@ as described below. If the model environments use different names or paths,
 set `BOLTZSCAN_BOLTZ_PYTHON` and `BOLTZSCAN_ESMFOLD_PYTHON` to their Python
 executables.
 
-`boltzscan install-pwm-refs` downloads the built-in Google Drive release,
+`boltzscan install-pwm-refs` downloads the built-in GitHub Release asset,
 verifies its fixed SHA256, and installs it at `data/pwms/_refs`. If that
 directory already contains a reference store, add `--replace`; the old store
 is moved to a timestamped backup. Developers can override both `--url` and
@@ -109,10 +109,10 @@ is moved to a timestamped backup. Developers can override both `--url` and
 plant-TF Pfam subset, so `find-tf`, `map-pwm`, and `run` work without a separate
 Pfam download after `doctor --fix` has installed HMMER.
 
-In a source checkout, the matching verified archive under `dist/` is preferred
-automatically, avoiding a Google Drive round trip. If Drive is unavailable in
-an installed wheel, the command fails after a short timeout instead of hanging;
-download the archive in a browser and install it locally with:
+The release is mirrored from the maintainer's Google Drive by the verified
+`publish-pwm-refs.yml` workflow, so end users do not depend on Google Drive's
+download host. If GitHub is unavailable, download the archive in a browser and
+install it locally with:
 
 ```bash
 boltzscan install-pwm-refs \

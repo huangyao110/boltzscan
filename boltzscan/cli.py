@@ -361,7 +361,7 @@ def _build_parser():
     p.add_argument('--url', default=DEFAULT_REFERENCE_RELEASE_URL,
         help=(
             'Release URL or local tar.gz path '
-            f'(default: built-in {DEFAULT_REFERENCE_RELEASE} Google Drive release)'
+            f'(default: built-in {DEFAULT_REFERENCE_RELEASE} GitHub Release)'
         ))
     p.add_argument('--sha256', default=DEFAULT_REFERENCE_RELEASE_SHA256,
         help=(

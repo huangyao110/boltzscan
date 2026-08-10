@@ -5,9 +5,7 @@ import pytest
 
 from boltzscan.pwmmap import archive as archive_module
 from boltzscan.pwmmap.archive import (
-    DEFAULT_REFERENCE_RELEASE_URL,
     _download_url,
-    _preferred_release_source,
     install_reference_store,
     pack_reference_store,
     validate_runtime_store,
@@ -79,28 +77,6 @@ def test_install_rejects_wrong_checksum_without_touching_destination(tmp_path):
         install_reference_store(packed.archive, destination, '0' * 64)
 
     assert not destination.exists()
-
-
-def test_default_release_prefers_a_matching_source_checkout_archive(
-    tmp_path, monkeypatch,
-):
-    source = _runtime_store(tmp_path)
-    packed = pack_reference_store(source, tmp_path / 'local-release.tar.gz')
-    monkeypatch.setattr(
-        archive_module,
-        'DEFAULT_LOCAL_REFERENCE_RELEASE',
-        packed.archive,
-    )
-    progress = []
-
-    selected = _preferred_release_source(
-        DEFAULT_REFERENCE_RELEASE_URL,
-        packed.sha256,
-        progress=progress.append,
-    )
-
-    assert selected == packed.archive
-    assert progress == [f'Using verified source-checkout PWM release: {packed.archive}']
 
 
 def test_google_drive_share_url_is_converted_to_direct_download():

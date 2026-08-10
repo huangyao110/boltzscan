@@ -26,20 +26,15 @@ from boltzscan.pwmmap.pfam import (
 ARCHIVE_ROOT = '_refs'
 DEFAULT_REFERENCE_RELEASE = '2026-08-08'
 DEFAULT_REFERENCE_RELEASE_URL = (
-    'https://drive.google.com/file/d/'
-    '1U9rpOLDOs9FlN6O461tcYr7Ms-HItUoB/view?usp=drive_link'
+    'https://github.com/huangyao110/boltzscan/releases/download/'
+    'pwm-refs-2026-08-08/boltzscan_pwm_refs_20260808.tar.gz'
 )
 DEFAULT_REFERENCE_RELEASE_CHECKSUM_URL = (
-    'https://drive.google.com/file/d/'
-    '1lYxOq33_f1z0JjJEA1yDA4TE_ycv76-f/view?usp=drive_link'
+    'https://github.com/huangyao110/boltzscan/releases/download/'
+    'pwm-refs-2026-08-08/boltzscan_pwm_refs_20260808.tar.gz.sha256'
 )
 DEFAULT_REFERENCE_RELEASE_SHA256 = (
     'be71be84ff7467d2c5d2e00c3d4aa108e821a056da4dc333d446db442417eae5'
-)
-DEFAULT_LOCAL_REFERENCE_RELEASE = (
-    Path(__file__).resolve().parents[2]
-    / 'dist'
-    / 'boltzscan_pwm_refs_20260808.tar.gz'
 )
 DOWNLOAD_TIMEOUT_SECONDS = 30
 REQUIRED_FILES = (
@@ -299,27 +294,9 @@ def _download(url, output, *, progress=None):
     except OSError as exc:
         raise RuntimeError(
             f'Cannot download the PWM reference release from {source}: {exc}. '
-            'Google Drive may be blocked or unavailable. Download the tar.gz in a '
+            'The remote host may be blocked or unavailable. Download the tar.gz in a '
             'browser, then pass its local path with `install-pwm-refs --url FILE`.'
         ) from exc
-
-
-def _preferred_release_source(url, expected_sha256, *, progress=None):
-    """Prefer the matching source-checkout release over unreliable Drive I/O."""
-    report = progress or (lambda message: None)
-    if str(url) != DEFAULT_REFERENCE_RELEASE_URL:
-        return url
-    local_release = DEFAULT_LOCAL_REFERENCE_RELEASE
-    if not local_release.is_file():
-        return url
-    observed = _sha256(local_release)
-    if observed != expected_sha256:
-        report(
-            f'Ignoring local release with unexpected SHA256: {local_release}'
-        )
-        return url
-    report(f'Using verified source-checkout PWM release: {local_release}')
-    return local_release
 
 
 def _safe_extract_runtime_archive(archive, destination):
@@ -364,8 +341,7 @@ def install_reference_store(url, refs_dir, sha256, *, replace=False, progress=No
     with tempfile.TemporaryDirectory(dir=refs_dir.parent) as temporary:
         temporary = Path(temporary)
         downloaded = temporary / 'pwm_refs.tar.gz'
-        source = _preferred_release_source(url, expected, progress=report)
-        _download(source, downloaded, progress=report)
+        _download(url, downloaded, progress=report)
         report('Verifying SHA256...')
         observed = _sha256(downloaded)
         if observed != expected:

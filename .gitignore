@@ -18,6 +18,7 @@ CLAUDE.md
 
 # Task / run artifacts
 tasks/
+/refs/
 boltz_results_*/
 rose_grn/
 rose_grn.tar.gz
