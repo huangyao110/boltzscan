@@ -29,12 +29,21 @@ is read as a reference input and is not placed under or copied into `RUN`.
 
 ## Installation
 
-BoltzScan supports Python 3.11.
+BoltzScan is currently installed from this repository. The command-line,
+PWM-transfer, FIMO, MSA, and scoring environment uses Python 3.11:
 
 ```bash
-pip install boltzscan
+git clone https://github.com/huangyao110/boltzscan.git
+cd boltzscan
+
+conda create -n boltzscan python=3.11 -y
+conda activate boltzscan
+python -m pip install --upgrade pip
+python -m pip install -e .
+
 boltzscan doctor
 boltzscan doctor --fix
+boltzscan install-pwm-refs
 ```
 
 `doctor` is read-only apart from its overwritten setup log. `doctor --fix`
@@ -52,19 +61,48 @@ Override the managed location with `BOLTZSCAN_TOOL_DIR` or `doctor --tool-dir`.
 BoltzScan resolves an explicitly supplied executable first, then its managed
 toolchain, then `PATH`.
 
-Model environments remain separate because their CUDA stacks are substantially
-larger than the sequence-analysis tools. Most users should also install a
-published, checksum-verified PWM reference release:
+### Install the structure-model runtimes
+
+The repository contains the inference-only Boltz and ESM source trees, while
+the root `pyproject.toml` exposes their heavy third-party dependencies as the
+`boltz` and `esmfold2` extras. Install them in separate environments so each
+model keeps its tested Python/CUDA stack. The environment names below are the
+names BoltzScan discovers automatically:
 
 ```bash
-boltzscan install-pwm-refs
+conda create -n boltz python=3.11 -y
+conda activate boltz
+python -m pip install --upgrade pip
+python -m pip install -e "/path/to/boltzscan[boltz]"
+
+conda create -n esmfold2 python=3.12 -y
+conda activate esmfold2
+python -m pip install --upgrade pip
+python -m pip install -e "/path/to/boltzscan[esmfold2]"
+
+conda activate boltzscan
+boltzscan doctor
 ```
 
-This downloads the built-in Google Drive release, verifies its fixed SHA256,
-and installs it at `data/pwms/_refs`. If that directory already contains a
-reference store, add `--replace`; the old store is moved to a timestamped
-backup. Developers can override both `--url` and `--sha256` to test another
-release.
+If the machine requires a particular CUDA build, install the matching PyTorch
+wheel in each model environment before installing the extra; pip will retain it
+when it satisfies the declared version. The ESMFold2 extra installs Biohub's
+Transformers fork because the standard Transformers package does not contain
+the required ESMFold2 implementation. Git must therefore be available during
+that installation.
+
+The extras install code dependencies, not model checkpoints. On first use the
+model runtimes can resolve their checkpoints from the upstream cache. For
+offline or shared-storage deployments, configure the local weight directories
+as described below. If the model environments use different names or paths,
+set `BOLTZSCAN_BOLTZ_PYTHON` and `BOLTZSCAN_ESMFOLD_PYTHON` to their Python
+executables.
+
+`boltzscan install-pwm-refs` downloads the built-in Google Drive release,
+verifies its fixed SHA256, and installs it at `data/pwms/_refs`. If that
+directory already contains a reference store, add `--replace`; the old store
+is moved to a timestamped backup. Developers can override both `--url` and
+`--sha256` to test another release.
 
 Representative PWMs are the default everywhere. If `motif_clusters.tsv` is
 missing, mapping/scanning stops with a command that fixes the problem. Use
