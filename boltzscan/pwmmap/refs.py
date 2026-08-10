@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from boltzscan.pwmmap import dbd, pwmio
+from boltzscan.pwmmap.pfam import (
+    DEFAULT_FULL_PFAM,
+    extract_runtime_pfam,
+    install_packaged_runtime_pfam,
+    runtime_pfam_paths,
+    validate_runtime_pfam,
+)
 from boltzscan.pwmmap.sources import cisbp, jaspar, uniprot
 
 
@@ -49,18 +56,31 @@ def load_ref_index(refs_dir):
 
 def build_reference_db(refs_dir="data/pwms/_refs", pfam=None,
                        cpu=8, refresh=False, include_cisbp=True, include_jaspar=True):
-    pfam = pfam or dbd.DEFAULT_PFAM
     root = Path(refs_dir)
+    source_pfam = Path(pfam).expanduser() if pfam else DEFAULT_FULL_PFAM
 
     # idempotency — skip rebuild if both artifacts exist and refresh not requested
     if not refresh and (root / "ref_dbd.fasta").exists() and (root / "ref_index.tsv").exists():
+        runtime_hmm, runtime_manifest = runtime_pfam_paths(root)
+        if not runtime_hmm.is_file() or not runtime_manifest.is_file():
+            if source_pfam.is_file():
+                extract_runtime_pfam(source_pfam, runtime_hmm.parent)
+            else:
+                install_packaged_runtime_pfam(root)
+        else:
+            validate_runtime_pfam(runtime_hmm, runtime_manifest)
         print(f"[refs] reuse existing store at {root}")
         return load_ref_store(root)
 
-    if not Path(pfam).exists():
-        raise SystemExit(f"Pfam HMM not found: {pfam} — build/point --pfam to a hmmpress-ed Pfam-A.hmm")
+    if not source_pfam.is_file():
+        raise SystemExit(
+            f"Full Pfam-A HMM not found: {source_pfam}. Maintainers must pass "
+            "`--pfam /path/to/Pfam-A.hmm`; BoltzScan will extract its compact "
+            "runtime subset automatically."
+        )
 
     root.mkdir(parents=True, exist_ok=True)
+    runtime_pfam = extract_runtime_pfam(source_pfam, root / "pfam")
     txt_dir = root / "motif_store" / "txt"
     meme_dir = root / "motif_store" / "meme"
     txt_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +133,17 @@ def build_reference_db(refs_dir="data/pwms/_refs", pfam=None,
 
     # extract reference DBDs (hmmsearch over ref proteins), write ref_dbd.fasta + index
     # Fix 3: capture written ids from write_dbd_fasta to keep fasta and index in lockstep
-    recs = dbd.extract_dbds(prot_fa, domtbl=None, pfam=pfam, cpu=cpu, work_dir=root)
+    if refresh:
+        # A refreshed full Pfam source may contain newer model versions. Do not
+        # reuse domtblout produced by the previous compact subset.
+        (root / "pfam.domtbl").unlink(missing_ok=True)
+    recs = dbd.extract_dbds(
+        prot_fa,
+        domtbl=None,
+        pfam=runtime_pfam.hmm,
+        cpu=cpu,
+        work_dir=root,
+    )
     written_ids = dbd.write_dbd_fasta(recs, root / "ref_dbd.fasta")
     with open(root / "ref_index.tsv", "w") as fh:
         fh.write("ref_id\tsource\tspecies\tfamily\tpfam_acc\tdbd_seq_id\tmotif_ids\n")
@@ -124,9 +154,11 @@ def build_reference_db(refs_dir="data/pwms/_refs", pfam=None,
             fh.write(f"{ref.ref_id}\t{ref.source}\t{ref.species}\t{ref.family}\t"
                      f"{r.pfam_acc}\t{sid}\t{';'.join(ref.motif_ids)}\n")
 
+    pfam_manifest = json.loads(runtime_pfam.manifest.read_text())
     (root / "build_manifest.json").write_text(json.dumps({
         "n_refs": len(refs), "n_with_seq": len(by_id), "n_dbd": len(recs),
         "include_cisbp": include_cisbp, "include_jaspar": include_jaspar,
+        "runtime_pfam": pfam_manifest,
     }, indent=2))
     print(f"[refs] {len(refs)} refs, {len(by_id)} with seq, {len(recs)} DBDs -> {root}")
     return load_ref_store(root)

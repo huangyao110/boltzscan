@@ -1,7 +1,7 @@
 """Identify plant transcription factors from a protein FASTA (PlantTFDB-style).
 
 Pipeline (sequence-only, no folding / GPU):
-  1. hmmsearch --cut_ga of every protein against Pfam-A  -> domtblout
+  1. hmmsearch --cut_ga against BoltzScan's compact plant-TF Pfam set -> domtblout
   2. parse domtblout into per-protein {pfam_acc: (count, best_domain_score)}
   3. apply an ordered PlantTFDB-style rule table to assign a TF family
      (combinatorial rules first, single-domain families next, promiscuous
@@ -22,7 +22,7 @@ those are labelled at the resolvable granularity and noted in CAVEATS below.
 boltzscan env. Usage:
   python boltzscan/utils/find_tf.py \
       --proteins "tasks/zyf/野菊基因组信息/protein_coreset.fa" \
-      --pfam data/pfam/Pfam-A.hmm \
+      --pfam /optional/custom/Pfam-A.hmm \
       --out-dir "tasks/zyf/野菊基因组信息/tf_out" --cpu 8
 """
 import subprocess
@@ -32,10 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from boltzscan.toolchain import resolve_executable
+from boltzscan.pwmmap.pfam import packaged_runtime_pfam_paths
 
 from Bio import SeqIO
 
-DEFAULT_PFAM = "data/pfam/Pfam-A.hmm"
+DEFAULT_PFAM = str(packaged_runtime_pfam_paths()[0])
 
 # ---------------------------------------------------------------------------
 # Pfam accessions used by the rules (base accession, no .version)

@@ -14,6 +14,13 @@ from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 from boltzscan import __version__
+from boltzscan.pwmmap.pfam import (
+    RUNTIME_PFAM_MANIFEST,
+    RUNTIME_PFAM_NAME,
+    install_packaged_runtime_pfam,
+    runtime_pfam_paths,
+    validate_runtime_pfam,
+)
 
 
 ARCHIVE_ROOT = '_refs'
@@ -29,12 +36,20 @@ DEFAULT_REFERENCE_RELEASE_CHECKSUM_URL = (
 DEFAULT_REFERENCE_RELEASE_SHA256 = (
     'be71be84ff7467d2c5d2e00c3d4aa108e821a056da4dc333d446db442417eae5'
 )
+DEFAULT_LOCAL_REFERENCE_RELEASE = (
+    Path(__file__).resolve().parents[2]
+    / 'dist'
+    / 'boltzscan_pwm_refs_20260808.tar.gz'
+)
+DOWNLOAD_TIMEOUT_SECONDS = 30
 REQUIRED_FILES = (
     'build_manifest.json',
     'ref_dbd.fasta',
     'ref_index.tsv',
     'ref_proteins.fasta',
     'motif_clusters.tsv',
+    f'pfam/{RUNTIME_PFAM_NAME}',
+    f'pfam/{RUNTIME_PFAM_MANIFEST}',
 )
 
 
@@ -47,6 +62,7 @@ class ReferenceArchiveSummary:
     n_dbd_rows: int
     n_txt_motifs: int
     n_meme_motifs: int
+    n_pfam_profiles: int
 
 
 @dataclass(frozen=True)
@@ -57,6 +73,7 @@ class ReferenceInstallSummary:
     n_dbd_rows: int
     n_txt_motifs: int
     n_meme_motifs: int
+    n_pfam_profiles: int
 
 
 def _sha256(path):
@@ -91,11 +108,14 @@ def validate_runtime_store(refs_dir):
     n_meme = sum(1 for _ in meme_dir.glob('*.meme'))
     if not n_txt or not n_meme:
         raise ValueError(f'PWM reference motif store is empty: {refs_dir / "motif_store"}')
+    pfam = validate_runtime_pfam(*runtime_pfam_paths(refs_dir))
     return {
         'n_dbd_rows': _line_count(refs_dir / 'ref_index.tsv'),
         'n_txt_motifs': n_txt,
         'n_meme_motifs': n_meme,
         'n_cluster_rows': _line_count(refs_dir / 'motif_clusters.tsv'),
+        'n_pfam_profiles': pfam.n_profiles,
+        'pfam_sha256': pfam.sha256,
     }
 
 
@@ -109,7 +129,8 @@ def _release_manifest(refs_dir, counts):
         'boltzscan_version': __version__,
         'contents': (
             'Runtime DBD index, representative motif map, and scan-ready PWM files. '
-            'Raw download caches, logs, Pfam domtblout, and Tomtom work files are excluded.'
+            'The compact plant-TF Pfam HMM required at runtime is included. Raw '
+            'download caches, logs, Pfam domtblout, and Tomtom work files are excluded.'
         ),
         'counts': counts,
         'build': build_manifest,
@@ -117,10 +138,11 @@ def _release_manifest(refs_dir, counts):
             'cisbp': 'https://cisbp.ccbr.utoronto.ca/data/3_10/DataFiles/Bulk_downloads/EntireDataset',
             'jaspar': 'https://jaspar.elixir.no/api/v1/matrix/',
             'uniprot': 'https://rest.uniprot.org/',
+            'pfam': 'https://ftp.ebi.ac.uk/pub/databases/Pfam/',
         },
         'source_notice': (
             'JASPAR states CC BY 4.0. Confirm CIS-BP redistribution terms before '
-            'publishing this combined artifact publicly.'
+            'publishing this combined artifact publicly. Pfam data are CC0.'
         ),
         'core_sha256': {
             name: _sha256(refs_dir / name)
@@ -184,6 +206,7 @@ def pack_reference_store(refs_dir, archive):
         sha256=digest,
         size_bytes=archive.stat().st_size,
         **{key: counts[key] for key in ('n_dbd_rows', 'n_txt_motifs', 'n_meme_motifs')},
+        n_pfam_profiles=counts['n_pfam_profiles'],
     )
 
 
@@ -230,42 +253,73 @@ def _download(url, output, *, progress=None):
         if urlparse(download_url).hostname == 'drive.usercontent.google.com'
         else urlparse(download_url).hostname or 'download server'
     )
-    report(f'Connecting to {source} (the first response may take a while)...')
+    report(
+        f'Connecting to {source} '
+        f'(timeout: {DOWNLOAD_TIMEOUT_SECONDS} seconds)...'
+    )
     request = Request(
         download_url,
         headers={'User-Agent': f'BoltzScan/{__version__}'},
     )
-    with urlopen(request, timeout=600) as response, Path(output).open('wb') as handle:
-        try:
-            total_bytes = int(response.headers.get('Content-Length', 0))
-        except (TypeError, ValueError):
-            total_bytes = 0
-        if total_bytes:
-            report(f'Download started: {_format_size(total_bytes)}')
-        else:
-            report('Download started: server did not report the file size')
-
-        downloaded = 0
-        next_percent = 10
-        next_bytes = 10 * 1024 * 1024
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            handle.write(chunk)
-            downloaded += len(chunk)
+    try:
+        with urlopen(
+            request,
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        ) as response, Path(output).open('wb') as handle:
+            try:
+                total_bytes = int(response.headers.get('Content-Length', 0))
+            except (TypeError, ValueError):
+                total_bytes = 0
             if total_bytes:
-                percent = min(100, downloaded * 100 // total_bytes)
-                while percent >= next_percent:
-                    report(
-                        f'Download: {next_percent:3d}% '
-                        f'({_format_size(downloaded)} / {_format_size(total_bytes)})'
-                    )
-                    next_percent += 10
-            elif downloaded >= next_bytes:
-                report(f'Downloaded: {_format_size(downloaded)}')
-                next_bytes += 10 * 1024 * 1024
-        report(f'Download complete: {_format_size(downloaded)}')
+                report(f'Download started: {_format_size(total_bytes)}')
+            else:
+                report('Download started: server did not report the file size')
+
+            downloaded = 0
+            next_percent = 10
+            next_bytes = 10 * 1024 * 1024
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                downloaded += len(chunk)
+                if total_bytes:
+                    percent = min(100, downloaded * 100 // total_bytes)
+                    while percent >= next_percent:
+                        report(
+                            f'Download: {next_percent:3d}% '
+                            f'({_format_size(downloaded)} / {_format_size(total_bytes)})'
+                        )
+                        next_percent += 10
+                elif downloaded >= next_bytes:
+                    report(f'Downloaded: {_format_size(downloaded)}')
+                    next_bytes += 10 * 1024 * 1024
+            report(f'Download complete: {_format_size(downloaded)}')
+    except OSError as exc:
+        raise RuntimeError(
+            f'Cannot download the PWM reference release from {source}: {exc}. '
+            'Google Drive may be blocked or unavailable. Download the tar.gz in a '
+            'browser, then pass its local path with `install-pwm-refs --url FILE`.'
+        ) from exc
+
+
+def _preferred_release_source(url, expected_sha256, *, progress=None):
+    """Prefer the matching source-checkout release over unreliable Drive I/O."""
+    report = progress or (lambda message: None)
+    if str(url) != DEFAULT_REFERENCE_RELEASE_URL:
+        return url
+    local_release = DEFAULT_LOCAL_REFERENCE_RELEASE
+    if not local_release.is_file():
+        return url
+    observed = _sha256(local_release)
+    if observed != expected_sha256:
+        report(
+            f'Ignoring local release with unexpected SHA256: {local_release}'
+        )
+        return url
+    report(f'Using verified source-checkout PWM release: {local_release}')
+    return local_release
 
 
 def _safe_extract_runtime_archive(archive, destination):
@@ -310,7 +364,8 @@ def install_reference_store(url, refs_dir, sha256, *, replace=False, progress=No
     with tempfile.TemporaryDirectory(dir=refs_dir.parent) as temporary:
         temporary = Path(temporary)
         downloaded = temporary / 'pwm_refs.tar.gz'
-        _download(url, downloaded, progress=report)
+        source = _preferred_release_source(url, expected, progress=report)
+        _download(source, downloaded, progress=report)
         report('Verifying SHA256...')
         observed = _sha256(downloaded)
         if observed != expected:
@@ -324,6 +379,16 @@ def install_reference_store(url, refs_dir, sha256, *, replace=False, progress=No
         staged_refs = extracted / ARCHIVE_ROOT
         if not (staged_refs / 'release_manifest.json').is_file():
             raise ValueError('PWM reference archive is missing release_manifest.json')
+        staged_hmm, staged_manifest = runtime_pfam_paths(staged_refs)
+        if not staged_hmm.exists() and not staged_manifest.exists():
+            # Compatibility bridge for the pre-Pfam built-in release. New
+            # archives always carry these files and are validated below.
+            report('Adding the packaged compact plant-TF Pfam library...')
+            install_packaged_runtime_pfam(staged_refs)
+        elif not staged_hmm.is_file() or not staged_manifest.is_file():
+            raise ValueError(
+                'PWM reference archive contains an incomplete compact Pfam library'
+            )
         report('Validating extracted reference store...')
         counts = validate_runtime_store(staged_refs)
         report('Reference store validated; installing atomically...')
@@ -350,4 +415,5 @@ def install_reference_store(url, refs_dir, sha256, *, replace=False, progress=No
         archive_sha256=observed,
         backup_dir=backup,
         **{key: counts[key] for key in ('n_dbd_rows', 'n_txt_motifs', 'n_meme_motifs')},
+        n_pfam_profiles=counts['n_pfam_profiles'],
     )

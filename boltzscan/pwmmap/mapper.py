@@ -9,6 +9,7 @@ from boltzscan.pwmmap import dbd, align
 from boltzscan.pwmmap.refs import load_ref_store, load_ref_index
 from boltzscan.pwmmap.thresholds import cutoff_for
 from boltzscan.pwmmap.cluster import load_clusters
+from boltzscan.pwmmap.pfam import resolve_runtime_pfam, sha256_file
 
 
 @dataclass
@@ -28,7 +29,8 @@ def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
                 threshold_mode="family", threshold=0.70, min_cov=0.8,
                 blastp=None, makeblastdb=None, pfam=None, cpu=8,
                 collapse_clusters=True):
-    pfam = pfam or dbd.DEFAULT_PFAM
+    refs_dir = Path(refs_dir)
+    pfam = resolve_runtime_pfam(refs_dir, explicit=pfam)
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     txt_dir = out_dir/"txt"; meme_dir = out_dir/"meme"
     txt_dir.mkdir(exist_ok=True); meme_dir.mkdir(exist_ok=True)
@@ -103,7 +105,9 @@ def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
 
     (out_dir / "pwm_mapping.json").write_text(json.dumps({
         "schema_version": 1,
-        "reference_dir": str(Path(refs_dir).resolve()),
+        "reference_dir": str(refs_dir.resolve()),
+        "pfam_hmm": str(pfam),
+        "pfam_sha256": sha256_file(pfam),
         "pwm_clustered": bool(collapse_clusters),
         "cluster_map": (
             str((Path(refs_dir) / "motif_clusters.tsv").resolve())

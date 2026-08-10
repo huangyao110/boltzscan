@@ -19,6 +19,12 @@ from pathlib import Path
 
 from Bio import SeqIO
 
+from boltzscan.pwmmap.pfam import (
+    RUNTIME_PFAM_MANIFEST,
+    resolve_runtime_pfam,
+    validate_runtime_pfam,
+)
+
 
 @dataclass(frozen=True)
 class ReferenceSubsetSummary:
@@ -112,6 +118,9 @@ def create_reference_subset(
         )
 
     retained_dbd_ids = {row["dbd_seq_id"] for row in retained_rows}
+    source_pfam_hmm = resolve_runtime_pfam(source_refs)
+    source_pfam_manifest = source_pfam_hmm.with_name(RUNTIME_PFAM_MANIFEST)
+    source_pfam = validate_runtime_pfam(source_pfam_hmm, source_pfam_manifest)
     out_dir.mkdir(parents=True)
     try:
         with open(out_dir / "ref_index.tsv", "w", newline="") as handle:
@@ -143,6 +152,11 @@ def create_reference_subset(
                     shutil.copy2(source_file, target_dir / source_file.name)
                     copied[kind] += 1
 
+        target_pfam_dir = out_dir / "pfam"
+        target_pfam_dir.mkdir(parents=True)
+        shutil.copy2(source_pfam.hmm, target_pfam_dir / source_pfam.hmm.name)
+        shutil.copy2(source_pfam.manifest, target_pfam_dir / source_pfam.manifest.name)
+
         summary = ReferenceSubsetSummary(
             out_dir=out_dir,
             excluded_species=tuple(exclude_species),
@@ -166,6 +180,10 @@ def create_reference_subset(
             "leakage_check": {
                 "excluded_retained_motif_id_overlap": 0,
                 "status": "passed",
+            },
+            "runtime_pfam": {
+                "profiles": source_pfam.n_profiles,
+                "sha256": source_pfam.sha256,
             },
         }
         (out_dir / "subset_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

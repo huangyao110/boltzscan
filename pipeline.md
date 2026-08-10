@@ -156,7 +156,7 @@ boltzscan promoter \
 
 ```text
 hmmsearch --cut_ga --cpu <N> --domtblout pfam.domtbl -o /dev/null \
-  Pfam-A.hmm proteins.fa
+  plant_tf_pfam.hmm proteins.fa
 ```
 
 随后按一个有顺序的 PlantTFDB-style 规则表分类：组合域规则先于单域规则，C2H2/C3H 等容易泛化的锌指规则放在最后；含转座元件相关 Pfam 的蛋白通常被排除，FAR1 是明确例外。当前 DBD allowlist 有 **45 个 Pfam base accession**。
@@ -173,13 +173,15 @@ boltzscan install-pwm-refs
 
 该命令内置当前 Google Drive 发布链接和 SHA256，自动下载、校验并安装到
 `data/pwms/_refs`。若该目录已有数据库，显式增加 `--replace`，旧目录会先被移动到
-带时间戳的备份。开发者测试其他发布包时仍可同时覆盖 `--url` 和 `--sha256`。
+带时间戳的备份。发布包同时安装 70-profile 的植物 TF Pfam 精简库；普通用户不再需要
+另行下载完整 Pfam-A。开发者测试其他发布包时仍可同时覆盖 `--url` 和 `--sha256`。
 
 开发者更新数据库时运行：
 
 ```bash
 boltzscan build-pwm-refs \
   --refs data/pwms/_refs \
+  --pfam /path/to/Pfam-A.hmm \
   --cpu 8 \
   --archive dist/boltzscan_pwm_refs.tar.gz \
   --refresh
@@ -189,6 +191,8 @@ boltzscan build-pwm-refs \
 最后写出运行时精简 `tar.gz` 和相邻 SHA256 文件。参考库只需安装或构建一次，后续
 物种映射不联网。若核心文件和 cluster 已存在且没有 `--refresh`，代码直接复用并重新
 打包。归档不包含原始下载缓存、日志、`pfam.domtbl` 和 `_cluster_work`。
+完整 Pfam-A 仅作为维护者构建输入；命令会抽取规则实际依赖的 70 个 profile，并把
+`pfam/plant_tf_pfam.hmm`、profile 清单及源文件/子集 SHA256 一同放入运行时发布包。
 
 ### 7.1 数据来源与版本策略
 
@@ -197,7 +201,7 @@ boltzscan build-pwm-refs \
 | CIS-BP | 固定下载路径含 `data/3_10/` | **CIS-BP 3.10** 可确认 |
 | JASPAR | REST `api/v1/matrix/`，`collection=CORE`、`page_size=500` | 每个 matrix ID 自带版本，如 `MA1210.3`；没有固定全库 release |
 | UniProt | 实时 UniProt REST；JASPAR 优先 accession FASTA，CIS-BP 用 DBID + species 搜索 top hit | 没有记录 UniProt release；结果缓存于 `uniprot_cache.json` |
-| Pfam-A | 本地 `data/pfam/Pfam-A.hmm` | 当前没有 Pfam release manifest，不能严谨声称具体 release |
+| Pfam-A | 维护者提供完整 HMM；运行时只发布规则依赖的 70-profile 子集 | 子集 manifest 记录完整源文件和子集 SHA256、profile 数量与 accession 清单 |
 
 CIS-BP 仅保留 `TF_Status == "D"` 且 `Motif_ID` 非空、非 `.` 的条目，再按 `DBID` 合并 motif。JASPAR 下载每个 CORE matrix 的详细 JSON 和 PFM。参考蛋白通过 UniProt 解析；解析失败会在缓存中保存空字符串，避免反复查询。
 
@@ -247,17 +251,18 @@ motif_clusters.tsv  65107ffa9da18fbab93b176769f7a96b676f214ade9b7f38df2591a15d52
 
 ### 7.3 Pfam 快照
 
-当前 `Pfam-A.hmm`：
+维护者输入与实际发布文件分开记录：
 
-| 属性 | 值 |
-|---|---|
-| 文件大小 | 2,067,046,650 bytes |
-| HMM profiles | 27,481 |
-| SHA256 | `a78a42d6faf265b6bfca59e8f062d06fae6083ce2c6e335d7b381f20b82b7903` |
-| 首个 profile 内部 DATE | `Wed Jul 9 14:09:34 2025` |
-| 本次 HDZIP 命中的模型版本 | `PF00046.36`、`PF02183.24` |
+| 属性 | 完整维护者输入 | BoltzScan 运行时子集 |
+|---|---:|---:|
+| 文件大小 | 2,067,046,650 bytes | 3,176,655 bytes |
+| HMM profiles | 27,481 | 70 |
+| SHA256 | `a78a42d6faf265b6bfca59e8f062d06fae6083ce2c6e335d7b381f20b82b7903` | `266f14fc49d77b33f5b2ed02b1b1884ed863599855b89a7f0b67e02c002a998e` |
 
-数值 release 没有写入本地 manifest；profile 数、模型 accession/version 和文件 SHA256 才是当前可验证身份。审计环境的 `hmmsearch` 是 HMMER `3.4 (Aug 2023)`。
+70 个 profile 是 `find-tf` family rules、DBD allowlist 和 TE 排除规则引用 accession
+的精确并集；不参与任何规则的 Pfam 模型不会进入运行时搜索。manifest 同时保存完整
+source 的 profile 数/SHA256 与子集 accession 清单，因此发布身份可验证。用 HDZIP
+样本对完整库和子集运行 HMMER 3.4，规则相关 `PF00046.36` 命中的坐标完全相同。
 
 ## 8. Leave-species-out（LOSO）
 

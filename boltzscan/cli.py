@@ -68,7 +68,7 @@ def _build_parser():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('-V', '--version', action='version',
+    parser.add_argument('-v', '--version', action='version',
         version=f'boltzscan {__version__} (by {__author__}, {__date__})')
     sub_parsers = parser.add_subparsers(dest='command')
     sub_parsers.required = True
@@ -101,7 +101,7 @@ def _build_parser():
     p.add_argument('--refs', default='data/pwms/_refs',
         help='PWM reference directory to validate (default: data/pwms/_refs)')
     p.add_argument('--pfam', default=None,
-        help='Pfam-A.hmm to validate (default: data/pfam/Pfam-A.hmm)')
+        help='Override Pfam HMM; default: compact library from --refs or package')
 
     # Primary TF-DNA workflow. Lower-level commands remain available for
     # inspection, but a new experiment should start here.
@@ -130,6 +130,8 @@ def _build_parser():
         help='The only output path: BoltzScan owns every directory and filename below it')
     p.add_argument('--refs', default='data/pwms/_refs',
         help='PWM reference directory (default: data/pwms/_refs)')
+    p.add_argument('--pfam', default=None,
+        help='Override the compact plant-TF Pfam HMM supplied by --refs')
     p.add_argument('--exclude-species', action='append', default=[],
         help='Species to remove from the PWM reference store before transfer; repeat or comma-separate values')
     p.add_argument('--no-pwm-cluster', action='store_true',
@@ -324,7 +326,7 @@ def _build_parser():
     p.add_argument('-o', '--output', required=True,
         help='Output directory (tf_annotation.tsv, tf_proteins.fasta, pfam.domtbl)')
     p.add_argument('-m', '--pfam', default=None,
-        help='hmmpress-ed Pfam-A.hmm (default: data/pfam/Pfam-A.hmm)')
+        help='Override Pfam HMM (default: packaged compact plant-TF library)')
     p.add_argument('-c', '--cpu', type=int, default=8,
         help='Threads for hmmsearch (default: 8)')
     p.add_argument('--domtbl', default=None,
@@ -336,7 +338,8 @@ def _build_parser():
     p = sub_parsers.add_parser('build-pwm-refs',
         help='Maintainer: download sources, build+cluster PWM refs, and package a release')
     p.add_argument('--refs', default='data/pwms/_refs', help='Reference store dir (default: data/pwms/_refs)')
-    p.add_argument('-m', '--pfam', default=None)
+    p.add_argument('-m', '--pfam', default=None,
+        help='Full Pfam-A.hmm maintainer input; a compact runtime subset is generated')
     p.add_argument('-c', '--cpu', type=int, default=8)
     p.add_argument('--no-cisbp', action='store_true')
     p.add_argument('--no-jaspar', action='store_true')
@@ -420,7 +423,8 @@ Main outputs:
     p.add_argument('--min-cov', type=float, default=0.8, help='Min DBD coverage for a blast hit')
     p.add_argument('--blastp', default=None)
     p.add_argument('--makeblastdb', default=None)
-    p.add_argument('-m', '--pfam', default=None)
+    p.add_argument('-m', '--pfam', default=None,
+        help='Override the compact plant-TF Pfam HMM supplied by --refs')
     p.add_argument('-c', '--cpu', type=int, default=8)
     p.add_argument('--no-pwm-cluster', action='store_true',
         help='Explicitly map all unclustered PWMs; default uses representatives')
@@ -561,6 +565,7 @@ def _cmd_run(args):
             promoters=args.promoters,
             out_dir=args.run,
             refs=args.refs,
+            pfam=args.pfam,
             exclude_species=args.exclude_species,
             collapse_clusters=not args.no_pwm_cluster,
             pvalue=args.pvalue,
@@ -587,7 +592,7 @@ def _cmd_wash(args):
             mode=args.mode,
             arms=args.arms,
         )
-    except (FileExistsError, FileNotFoundError, OSError, ValueError) as exc:
+    except (FileExistsError, FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"boltzscan wash: {exc}") from None
     print(
         f"Washed {summary.files} files from {', '.join(summary.arms)} "
@@ -712,6 +717,7 @@ def _cmd_build_pwm_refs(args):
     from boltzscan.pwmmap.archive import pack_reference_store
     from boltzscan.pwmmap.cluster import cluster_reference_motifs
     from boltzscan.pwmmap.refs import build_reference_db
+    from boltzscan.pwmmap.pfam import runtime_pfam_paths, validate_runtime_pfam
 
     store = build_reference_db(
         refs_dir=args.refs,
@@ -722,6 +728,11 @@ def _cmd_build_pwm_refs(args):
         include_jaspar=not args.no_jaspar,
     )
     print(f"Reference store ready at {store.root}")
+    compact_pfam = validate_runtime_pfam(*runtime_pfam_paths(store.root))
+    print(
+        f"Runtime Pfam: {compact_pfam.n_profiles} profiles, "
+        f"SHA256 {compact_pfam.sha256}"
+    )
     clusters_path = Path(args.refs) / 'motif_clusters.tsv'
     if args.refresh or not clusters_path.is_file():
         clusters = cluster_reference_motifs(
@@ -767,7 +778,8 @@ def _cmd_install_pwm_refs(args):
         raise SystemExit(f'boltzscan install-pwm-refs: {exc}') from None
     print(
         f"Installed PWM refs: {summary.n_dbd_rows} DBD rows, "
-        f"{summary.n_meme_motifs} scan-ready motifs -> {summary.refs_dir}"
+        f"{summary.n_meme_motifs} scan-ready motifs, "
+        f"{summary.n_pfam_profiles} Pfam profiles -> {summary.refs_dir}"
     )
     print(f"Verified SHA256: {summary.archive_sha256}")
     if summary.backup_dir is not None:

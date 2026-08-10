@@ -9,7 +9,12 @@ import platform
 import sys
 
 from boltzscan.pwmmap.archive import validate_runtime_store
-from boltzscan.pwmmap.dbd import DEFAULT_PFAM
+from boltzscan.pwmmap.pfam import (
+    RUNTIME_PFAM_MANIFEST,
+    RUNTIME_PFAM_NAME,
+    resolve_runtime_pfam,
+    validate_runtime_pfam,
+)
 from boltzscan.toolchain import (
     PROFILE_EXECUTABLES,
     executable_version,
@@ -111,16 +116,28 @@ def _data_checks(refs, pfam):
             f"{counts['n_meme_motifs']} motifs)",
         )
 
-    pfam = Path(pfam).expanduser()
-    if pfam.is_file():
-        yield DoctorCheck("Pfam-A.hmm", "OK", f"{pfam.resolve()} ({pfam.stat().st_size} bytes)")
-    else:
+    try:
+        resolved_pfam = resolve_runtime_pfam(refs, explicit=pfam)
+        if resolved_pfam.name == RUNTIME_PFAM_NAME:
+            compact = validate_runtime_pfam(
+                resolved_pfam,
+                resolved_pfam.with_name(RUNTIME_PFAM_MANIFEST),
+            )
+            detail = (
+                f"{compact.hmm} ({compact.n_profiles} profiles, "
+                f"SHA256 {compact.sha256[:12]}...)"
+            )
+        else:
+            detail = f"custom library: {resolved_pfam} ({resolved_pfam.stat().st_size} bytes)"
+    except (FileNotFoundError, OSError, ValueError) as exc:
         yield DoctorCheck(
-            "Pfam-A.hmm",
+            "Plant-TF Pfam",
             "MISSING",
-            f"not found at {pfam}; pass --pfam or install the Pfam-A HMM database",
+            str(exc),
             fixable=False,
         )
+    else:
+        yield DoctorCheck("Plant-TF Pfam", "OK", detail)
 
 
 def inspect_environment(*, profile="runtime", refs="data/pwms/_refs", pfam=None, tool_dir=None):
@@ -130,7 +147,7 @@ def inspect_environment(*, profile="runtime", refs="data/pwms/_refs", pfam=None,
         *_python_checks(),
         *_vendored_source_checks(),
         *_tool_checks(profile, tool_dir),
-        *_data_checks(refs, pfam or DEFAULT_PFAM),
+        *_data_checks(refs, pfam),
     ])
     return DoctorSummary(checks, managed_tool_root(tool_dir))
 

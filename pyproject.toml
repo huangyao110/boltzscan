@@ -96,6 +96,7 @@ exclude = [
 [tool.setuptools.package-data]
 boltzscan = [
     "VENDORED_INFERENCE.json",
+    "data/pfam/*",
     "boltz/LICENSE",
     "boltz/README.md",
     "boltz/pyproject.toml",

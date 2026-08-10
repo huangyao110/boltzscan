@@ -111,6 +111,7 @@ def _resolve_pwm_inputs(
     collapse_clusters,
     cpu,
     reuse,
+    pfam=None,
 ):
     """Map the run TFs and return its motif, mapping, and DBD paths."""
     from boltzscan.pwmmap.mapper import map_species
@@ -158,6 +159,7 @@ def _resolve_pwm_inputs(
         out_dir=pwm_dir,
         refs_dir=refs_for_mapping,
         domtbl=None,
+        pfam=pfam,
         cpu=cpu,
         collapse_clusters=collapse_clusters,
     )
@@ -182,6 +184,7 @@ def _run_prepare_stage(
     crop,
     model,
     reuse,
+    pfam=None,
 ):
     """Map PWMs, scan promoters, and materialize model inputs."""
     from boltzscan.fimocistarget.runner import run_fimo_scan
@@ -201,6 +204,7 @@ def _run_prepare_stage(
         ['boltzscan', 'run', 'step=pwm-map'],
         SimpleNamespace(
             refs=refs,
+            pfam=pfam,
             exclude_species=list(exclude_species),
             pwm_clustered=collapse_clusters,
             cpu=cpu,
@@ -215,6 +219,7 @@ def _run_prepare_stage(
             collapse_clusters=collapse_clusters,
             cpu=cpu,
             reuse=reuse,
+            pfam=pfam,
         )
 
     scan_dir = out_dir / 'scan'
@@ -550,6 +555,7 @@ def run_tf_dna_workflow(
     promoters,
     out_dir,
     refs='data/pwms/_refs',
+    pfam=None,
     exclude_species=(),
     collapse_clusters=True,
     pvalue=1e-5,
@@ -606,6 +612,7 @@ def run_tf_dna_workflow(
             promoters=promoters,
             out_dir=out_dir,
             refs=refs,
+            pfam=pfam,
             exclude_species=exclude_species,
             collapse_clusters=collapse_clusters,
             pvalue=pvalue,

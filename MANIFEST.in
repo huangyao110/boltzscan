@@ -1,4 +1,5 @@
 include boltzscan/VENDORED_INFERENCE.json
+graft boltzscan/data/pfam
 
 include boltzscan/boltz/LICENSE
 include boltzscan/boltz/README.md

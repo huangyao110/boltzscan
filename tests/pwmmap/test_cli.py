@@ -134,6 +134,7 @@ def test_run_parses_concise_tf_dna_workflow():
     assert ns.seed is None
     assert ns.no_pwm_cluster is False
     assert ns.run == 'run'
+    assert ns.pfam is None
 
 
 def test_run_can_resume_from_only_the_run_directory():
@@ -175,7 +176,7 @@ def test_run_help_exposes_only_production_parameters(capsys):
         parser.parse_args(['run', '--help'])
     help_text = capsys.readouterr().out
 
-    for public_option in ('--run', '--refs', '--stage', '--resume', '--model', '--crop'):
+    for public_option in ('--run', '--refs', '--pfam', '--stage', '--resume', '--model', '--crop'):
         assert public_option in help_text
     for internal_option in (
         '--out', '--motif-dir', '--tf2pwms', '--domtbl', '--cpu',

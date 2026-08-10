@@ -26,6 +26,9 @@ full-length TF. Use `boltzscan run --help` for the complete interface.
 The reusable PWM reference store defaults to `data/pwms/_refs`. Deployments
 that keep shared data elsewhere can pass `--refs /path/to/pwm_refs`; this path
 is read as a reference input and is not placed under or copied into `RUN`.
+The installed store owns the compact plant-TF Pfam library used by PWM mapping;
+users do not need to download the full multi-gigabyte Pfam-A database. A custom
+HMM remains possible with `--pfam /path/to/custom.hmm`.
 
 ## Installation
 
@@ -41,9 +44,9 @@ conda activate boltzscan
 python -m pip install --upgrade pip
 python -m pip install -e .
 
-boltzscan doctor
-boltzscan doctor --fix
 boltzscan install-pwm-refs
+boltzscan doctor --fix
+boltzscan doctor
 ```
 
 `doctor` is read-only apart from its overwritten setup log. `doctor --fix`
@@ -102,7 +105,21 @@ executables.
 verifies its fixed SHA256, and installs it at `data/pwms/_refs`. If that
 directory already contains a reference store, add `--replace`; the old store
 is moved to a timestamped backup. Developers can override both `--url` and
-`--sha256` to test another release.
+`--sha256` to test another release. The install includes a pinned 70-profile
+plant-TF Pfam subset, so `find-tf`, `map-pwm`, and `run` work without a separate
+Pfam download after `doctor --fix` has installed HMMER.
+
+In a source checkout, the matching verified archive under `dist/` is preferred
+automatically, avoiding a Google Drive round trip. If Drive is unavailable in
+an installed wheel, the command fails after a short timeout instead of hanging;
+download the archive in a browser and install it locally with:
+
+```bash
+boltzscan install-pwm-refs \
+  --url /path/to/boltzscan_pwm_refs_20260808.tar.gz \
+  --sha256 be71be84ff7467d2c5d2e00c3d4aa108e821a056da4dc333d446db442417eae5 \
+  --refs /path/to/_refs
+```
 
 Representative PWMs are the default everywhere. If `motif_clusters.tsv` is
 missing, mapping/scanning stops with a command that fixes the problem. Use
@@ -136,13 +153,20 @@ clusters, and packages the runtime-only release plus its SHA256 file:
 ```bash
 boltzscan build-pwm-refs \
   --refs data/pwms/_refs \
+  --pfam /path/to/Pfam-A.hmm \
   --archive dist/boltzscan_pwm_refs.tar.gz \
   --refresh
 ```
 
+Only reference maintainers supply the complete `Pfam-A.hmm`. The build selects
+exactly the profiles used by BoltzScan's TF-family, DBD, and transposon-exclusion
+rules, records the source and subset SHA256 values, and packages the resulting
+compact HMM with the PWM release.
+
 The runtime archive contains `ref_dbd.fasta`, `ref_index.tsv`,
 `ref_proteins.fasta`, `motif_clusters.tsv`, `motif_store/{txt,meme}`, and build
-and release manifests. It excludes raw download caches, logs, Pfam domtblout,
+and release manifests, plus `pfam/plant_tf_pfam.hmm` and its manifest. It
+excludes raw download caches, logs, Pfam domtblout, the complete Pfam-A library,
 and Tomtom work files. Upload the archive and checksum separately, then update
 the built-in release URL and SHA256 constants in
 `boltzscan/pwmmap/archive.py`.

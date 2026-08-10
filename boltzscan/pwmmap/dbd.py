@@ -11,10 +11,11 @@ from pathlib import Path
 from Bio import SeqIO
 
 from boltzscan.utils.find_tf import DBD_ACCS
+from boltzscan.pwmmap.pfam import packaged_runtime_pfam_paths
 from boltzscan.pwmmap.thresholds import family_for_pfam
 from boltzscan.toolchain import resolve_executable
 
-DEFAULT_PFAM = str(Path(__file__).resolve().parents[2] / "data" / "pfam" / "Pfam-A.hmm")
+DEFAULT_PFAM = str(packaged_runtime_pfam_paths()[0])
 
 
 @dataclass

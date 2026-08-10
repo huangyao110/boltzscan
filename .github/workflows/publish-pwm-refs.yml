@@ -1,0 +1,53 @@
+name: Publish PWM reference release
+
+on:
+  push:
+    tags:
+      - "pwm-refs-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub release tag
+        required: true
+        default: pwm-refs-2026-08-08
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      ARCHIVE: boltzscan_pwm_refs_20260808.tar.gz
+      EXPECTED_SHA256: be71be84ff7467d2c5d2e00c3d4aa108e821a056da4dc333d446db442417eae5
+      GOOGLE_DRIVE_URL: https://drive.usercontent.google.com/download?id=1U9rpOLDOs9FlN6O461tcYr7Ms-HItUoB&export=download&confirm=t
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and verify reference archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            --retry 5 --retry-all-errors \
+            --connect-timeout 30 --max-time 600 \
+            --speed-limit 1024 --speed-time 60 \
+            "$GOOGLE_DRIVE_URL" --output "$ARCHIVE"
+          printf '%s  %s\n' "$EXPECTED_SHA256" "$ARCHIVE" > "$ARCHIVE.sha256"
+          sha256sum --check "$ARCHIVE.sha256"
+
+      - name: Create or update GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "$ARCHIVE" "$ARCHIVE.sha256" \
+              --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" \
+              "$ARCHIVE" "$ARCHIVE.sha256" \
+              --title "BoltzScan PWM references 2026-08-08" \
+              --notes "Verified runtime PWM reference store for BoltzScan." \
+              --repo "$GITHUB_REPOSITORY"
+          fi
