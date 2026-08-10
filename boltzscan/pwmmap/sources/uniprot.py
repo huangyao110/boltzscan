@@ -17,7 +17,6 @@ import requests
 
 FASTA = "https://rest.uniprot.org/uniprotkb/{}.fasta"
 SEARCH = "https://rest.uniprot.org/uniprotkb/search"
-IDMAP = "https://rest.uniprot.org/idmapping"
 
 
 def _seq_from_fasta(text):
@@ -65,26 +64,6 @@ def search_fasta(dbid, species=None):
         query = f'({dbid}) AND (organism_name:"{species.replace("_", " ")}")'
     text = _get_with_retry(SEARCH, params={"query": query, "format": "fasta", "size": 1})
     return text if (text and text.startswith(">")) else None
-
-
-def map_ids_to_uniprot(ids, from_db="Ensembl_Genomes", to_db="UniProtKB"):
-    """Batch map source IDs -> UniProt accessions (kept for compatibility; the
-    search-based resolver below is preferred for heterogeneous cisBP DBIDs)."""
-    if not ids:
-        return {}
-    sub = requests.post(f"{IDMAP}/run",
-                        data={"from": from_db, "to": to_db, "ids": ",".join(ids)},
-                        timeout=120)
-    sub.raise_for_status()
-    job = sub.json()["jobId"]
-    for _ in range(60):
-        st = requests.get(f"{IDMAP}/status/{job}", timeout=120).json()
-        if st.get("jobStatus") == "FINISHED":
-            break
-        time.sleep(3)
-    res = requests.get(f"{IDMAP}/results/{job}?size=500", timeout=120).json()
-    return {x["from"]: x["to"]["primaryAccession"] if isinstance(x["to"], dict)
-            else x["to"] for x in res.get("results", [])}
 
 
 def _resolve_one(ref):

@@ -1,30 +1,66 @@
 """CLI entry point for the boltzscan package.
 
-Exposed as the `boltzscan` console script via pyproject.toml. The thin
-`bscan.py` shim at the repo root and `boltzscan/__main__.py` both delegate to
-:func:`main` here.
+Exposed as the `boltzscan` console script via pyproject.toml and as
+`python -m boltzscan` via :mod:`boltzscan.__main__`.
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from boltzscan import __version__
 from boltzscan.fimocistarget.expro import (
-    extract_promoters,
-    extract_bed_regions,
-    extract_promoters_both,
+    extract_promoter_regions,
 )
-from boltzscan.fimocistarget.runner import run_cistarg_with_tf_aggregation
-from boltzscan.utils.boltz_input import build_boltz_input_from_fimo
+from boltzscan.pwmmap.archive import (
+    DEFAULT_REFERENCE_RELEASE,
+    DEFAULT_REFERENCE_RELEASE_SHA256,
+    DEFAULT_REFERENCE_RELEASE_URL,
+)
+from boltzscan.predict.runners import PREDICTION_MODELS, available_cpu_count
+from boltzscan.utils.boltz_input import write_fimo_model_yamls
 
-__author__ = 'huangyao'
-__date__ = '2026-05-16'
+__author__ = 'HuangYao'
+__date__ = '2026-08-08'
+
+BOLTZSCAN_BANNER = r"""
+####   ###  #     ##### #####  ####  ####  ###  #   #
+#   # #   # #       #       # #     #     #   # ##  #
+#   # #   # #       #      #  #     #     #   # # # #
+####  #   # #       #     #    ###  #     ##### #  ##
+#   # #   # #       #    #        # #     #   # #   #
+#   # #   # #       #   #         # #     #   # #   #
+####   ###  #####   #   ##### ####   #### #   # #   #
+""".strip('\n')
+_BANNER_ANSI_256 = (45, 39, 33, 69, 99, 135, 171)
+
+
+def _terminal_banner(stream=None):
+    """Return a gradient banner only when help is printed to a real terminal."""
+    stream = stream or sys.stdout
+    color_enabled = (
+        hasattr(stream, 'isatty')
+        and stream.isatty()
+        and 'NO_COLOR' not in os.environ
+        and os.environ.get('TERM', '') != 'dumb'
+    )
+    if not color_enabled:
+        return BOLTZSCAN_BANNER
+    return '\n'.join(
+        f'\033[1;38;5;{color}m{line}\033[0m'
+        for color, line in zip(_BANNER_ANSI_256, BOLTZSCAN_BANNER.splitlines())
+    )
 
 
 def _build_parser():
     parser = argparse.ArgumentParser(
         prog='boltzscan',
-        description='BoltzScan: GRN inference via structural modeling of TFs and their targets.',
+        description=(
+            f'{_terminal_banner()}\n\n'
+            'BoltzScan: TF-DsDNA candidate prioritization by PWM/FIMO and structural modeling.\n'
+            'Start a new experiment with `boltzscan run --help`; '
+            'lower-level commands remain available for inspection.'
+        ),
         epilog=(
             f'Author : {__author__}\n'
             f'Date   : {__date__}\n'
@@ -37,19 +73,126 @@ def _build_parser():
     sub_parsers = parser.add_subparsers(dest='command')
     sub_parsers.required = True
 
-    # extract_pd_from_pdb
-    p = sub_parsers.add_parser('extract_pd_from_pdb', help='Extract protein domains from PDB files')
-    p.add_argument('pdb_file', help='PDB file')
+    p = sub_parsers.add_parser(
+        'doctor',
+        help='Check BoltzScan dependencies and optionally install managed external tools',
+        description=(
+            'Inspect Python packages, external bioinformatics programs, PWM references, '
+            'and Pfam data. By default this command is read-only. Pass --fix to install '
+            'a pinned BLAST+/HMMER/MEME Suite toolchain in a private BoltzScan directory without '
+            'changing the active Python or Conda environment.'
+        ),
+        epilog=(
+            'Examples:\n'
+            '  boltzscan doctor\n'
+            '  boltzscan doctor --fix\n'
+            '  boltzscan doctor --fix --profile refs-builder\n\n'
+            'The runtime profile includes FIMO. The refs-builder profile additionally '
+            'requires Tomtom for build-pwm-refs and LOSO PWM reclustering.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('--fix', action='store_true',
+        help='Install/update the selected external-tool profile (never uses sudo)')
+    p.add_argument('--profile', default='runtime', choices=['runtime', 'refs-builder'],
+        help='runtime: BLAST+/HMMER/FIMO; refs-builder: also require Tomtom')
+    p.add_argument('--tool-dir', default=None,
+        help='Managed toolchain directory (default: user data dir; or BOLTZSCAN_TOOL_DIR)')
+    p.add_argument('--refs', default='data/pwms/_refs',
+        help='PWM reference directory to validate (default: data/pwms/_refs)')
+    p.add_argument('--pfam', default=None,
+        help='Pfam-A.hmm to validate (default: data/pfam/Pfam-A.hmm)')
+
+    # Primary TF-DNA workflow. Lower-level commands remain available for
+    # inspection, but a new experiment should start here.
+    p = sub_parsers.add_parser(
+        'run',
+        help='Run the auditable TF-DNA workflow: PWM transfer -> FIMO -> model inputs -> prediction -> ipSAE',
+        description=(
+            'Production entry point. Provide one named --run directory; BoltzScan '
+            'owns all output directory and file names below it. Initial prepare '
+            'also needs --tf and --promoters; predict/score resumes need only --run.'
+        ),
+        epilog=(
+            'Example:\n'
+            '  boltzscan run --run tomato_run --tf TF.fa '
+            '--promoters promoters.fa --model boltz2\n\n'
+            'All step logs are written directly under tomato_run/ and are '
+            'overwritten when the same step is run again.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('--tf', default=None,
+        help='TF protein FASTA (required only when prepare is selected)')
+    p.add_argument('--promoters', default=None,
+        help='Promoter FASTA; record IDs are target-gene IDs (required only for prepare)')
+    p.add_argument('-r', '--run', required=True,
+        help='The only output path: BoltzScan owns every directory and filename below it')
+    p.add_argument('--refs', default='data/pwms/_refs',
+        help='PWM reference directory (default: data/pwms/_refs)')
+    p.add_argument('--exclude-species', action='append', default=[],
+        help='Species to remove from the PWM reference store before transfer; repeat or comma-separate values')
+    p.add_argument('--no-pwm-cluster', action='store_true',
+        help='Explicitly use all mapped PWMs; default requires cluster representatives')
+    p.add_argument('--pvalue', type=float, default=1e-5,
+        help='FIMO threshold used for both scanning and candidate preparation (default: 1e-5)')
+    p.add_argument('--overlap-thresh', type=float, default=0.0,
+        help='Promoter-local FIMO core-overlap redundancy threshold (default: 0.0)')
+    p.add_argument('--dna-flank', type=int, default=5,
+        help='Bases on each side of the FIMO core in the modeled dsDNA (default: 5)')
+    p.add_argument('--crop', type=int, default=None,
+        help='Enable interface localization and crop with N AA flank (disabled by default)')
+    p.add_argument('-m', '--model', default=None, choices=PREDICTION_MODELS,
+        help='Structure model (default: esmfold2 for a new run; restored from RUN later)')
+    p.add_argument('--seed', type=int, default=None,
+        help='Optional random seed for any prediction model (default: model native behavior)')
+    p.add_argument('--stage', default='all',
+        choices=['all', 'prepare', 'predict', 'score'],
+        help='Workflow stage to run (default: all)')
+    p.add_argument('--resume', dest='reuse', action='store_true',
+        help='Resume prepare from compatible PWM and raw FIMO outputs already in RUN')
+    p = sub_parsers.add_parser(
+        'wash',
+        help='Publish native Boltz/ESMFold2 outputs in the shared method-named layout',
+    )
+    p.add_argument('-r', '--run', required=True, help='Run directory containing native predictions')
+    p.add_argument('-m', '--model', default='esmfold2', choices=PREDICTION_MODELS,
+        help='Prediction model whose native outputs will be published (default: esmfold2)')
+    p.add_argument('--mode', default='soft', choices=['soft', 'hard'],
+        help='soft: live relative symlinks; hard: real dirs with hard links/copy fallback')
+    p.add_argument('--arms', nargs='+', default=None,
+        help='Optional native arms to publish, e.g. full crop20 (default: auto-discover)')
 
     # msa
-    p = sub_parsers.add_parser('msa', help='Run MSA on FASTA files using run_msa_mutil')
-    p.add_argument('-f', '--fasta_file', required=True, help='Input FASTA file path')
-    p.add_argument('-o', '--output_dir', required=True, help='Output directory for MSA results')
-    p.add_argument('-c', '--cpus', type=int, default=1, help='Number of CPU cores to use (default: 1)')
+    p = sub_parsers.add_parser(
+        'msa',
+        help='Generate protein MSAs with the remote Protenix-compatible server',
+        description=(
+            'Submit every protein in a FASTA file to the remote MSA server. '
+            'Only <output>/<protein_id>/0.a3m is retained; Protenix is not required.'
+        ),
+        epilog=(
+            'Example:\n'
+            '  boltzscan msa -f tf_proteins.fasta -o msa\n\n'
+            'Output:\n'
+            '  msa/<protein_id>/0.a3m\n'
+            '  msa.log'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('-f', '--fasta', dest='fasta_file', required=True,
+        help='Input protein FASTA; multiple records are supported')
+    p.add_argument('-o', '--output', dest='output_dir', required=True,
+        help='Output directory containing one <protein_id>/0.a3m per record')
+    p.add_argument('-j', '--jobs', dest='jobs', type=int, default=1,
+        help='Concurrent server requests (default: 1)')
+    p.add_argument('--server-url', default=None,
+        help='MSA service base URL (default: Protenix server or BOLTZSCAN_MSA_SERVER_URL)')
 
     # promoter
-    p = sub_parsers.add_parser('promoter',
-        help='Extract promoter regions from genome+GFF (FASTA, and/or BED via --format)')
+    p = sub_parsers.add_parser(
+        'promoter',
+        help='Extract promoter regions from genome+GFF as BED, FASTA, or both')
     p.add_argument('-gff', '--gff', required=False,
         default='./odata/Rosa_chinensis/Rosa_chinensis.RchiOBHm-V2.60.gff3',
         help='Input GFF3 annotation file (can be .gz). Assumes ### gene separator or groups implicitly.')
@@ -58,94 +201,116 @@ def _build_parser():
         help='Input Genome FASTA file (can be .gz).')
     p.add_argument('-o', '--output', required=False,
         default='./Rosa_chinensis_promoter',
-        help='Output prefix: writes <prefix>.fasta and (with --format both) <prefix>.bed')
-    p.add_argument('-f', '--format', default='both', choices=['fasta', 'both'],
-        help='fasta = promoter FASTA only; both = promoter BED + FASTA (default: both)')
+        help='Output prefix; suffixes .bed and/or .fasta are added automatically')
+    p.add_argument('-f', '--format', default='both', choices=['bed', 'fasta', 'both'],
+        help='Output promoter BED, FASTA, or both (default: both)')
     p.add_argument('-u', '--upstream', type=int, default=2000, help='Bases UPSTREAM of CDS anchor (will be uppercase).')
     p.add_argument('-d', '--downstream', type=int, default=200, help='Bases DOWNSTREAM of CDS anchor, including anchor position (will be lowercase).')
 
-    # extract-bed
-    p = sub_parsers.add_parser('extract-bed', help='Extract genomic regions from GFF and generate BED file')
-    p.add_argument('-i', '--input', required=False,
-        default='./odata/Rosa_chinensis/Rosa_chinensis.RchiOBHm-V2.60.gff3',
-        help='Input GFF file path')
-    p.add_argument('-o', '--output', required=False,
-        default='./Rosa_chinensis_regions.bed',
-        help='Output BED file path')
-    p.add_argument('-t', '--type', default='gene', help='Feature type to extract (default: gene)')
-    p.add_argument('-n', '--name', default='ID', help='Attribute field to use as name (default: ID)')
-
-    # cistarg
+    # fimo-scan
     p = sub_parsers.add_parser(
-        'cistarg',
-        help='Build cisTarget DB (FIMO + score matrix) and roll motif scores up to TF level',
+        'fimo-scan',
+        help='Scan promoters and write raw, promoter-level, and model-level CSVs',
     )
-    p.add_argument('-f', '--fasta', required=True,
-        help='Target promoter FASTA (also used to compute ACGT background frequencies)')
+    p.add_argument('-f', '--fasta', '--promoters', dest='fasta', required=True,
+        help='Target promoter FASTA')
     p.add_argument('-m', '--motif-dir', required=True,
-        help='Directory of per-motif .meme files (e.g. data/pwms/tair/pwms_all_memes)')
+        help='Directory of mapped per-motif .meme files')
     p.add_argument('-t', '--tf2pwms', required=True,
-        help='JSON mapping TF_id -> [motif_id, ...] (e.g. data/pwms/tair/tf2pwms_dct.json)')
+        help='JSON mapping TF_id -> [motif_id, ...] from map-pwm')
+    p.add_argument('--tf-fasta', '--tf', dest='tf_fasta', required=True,
+        help='TF protein FASTA; record IDs must match tf2pwms keys')
     p.add_argument('-o', '--output', required=True,
-        help='Output directory for cisTarget DB and TF-level matrices')
-    p.add_argument('--tf-fasta', default=None,
-        help='Optional TF FASTA; if given, only motifs mapped to these TF IDs (via tf2pwms) are scanned')
-    p.add_argument('--motif-agg', default='max',
-        choices=['max', 'sum', 'mean', 'count', 'top_n_mean', 'weighted_sum', 'max_with_count'],
-        help='Per-motif score aggregation across multiple FIMO hits in a sequence (default: max)')
-    p.add_argument('--tf-agg', default='max', choices=['max', 'sum', 'mean'],
-        help='How to combine multiple motifs that map to the same TF (default: max)')
+        help='Output directory for the three FIMO CSV levels')
     p.add_argument('--pvalue-thresh', type=float, default=1e-4, help='FIMO p-value threshold (default: 1e-4)')
-    p.add_argument('--max-stored-scores', type=int, default=500000, help='FIMO max_stored_scores (default: 500000)')
-    p.add_argument('--motif-pseudo', type=float, default=0.1, help='Motif pseudocount (default: 0.1)')
-    p.add_argument('--top-n', type=int, default=3, help='top_n for top_n_mean aggregation (default: 3, ignored otherwise)')
-    p.add_argument('--no-analyze', action='store_true', help='Skip multi-hit statistics step to save time')
+    p.add_argument('--overlap-thresh', type=float, default=0.0,
+        help='Promoter-local FIMO core-overlap threshold (default: 0.0)')
+    p.add_argument('--dna-flank', type=int, default=5,
+        help='Bases retained on each side of a FIMO core (default: 5)')
+    p.add_argument('--no-pwm-cluster', action='store_true',
+        help='Explicitly allow an unclustered PWM mapping')
     p.add_argument('--reuse', action='store_true',
-        help='Reuse <output>/score_matrix.feather if present (skip FIMO rebuild)')
+        help='Reuse raw_fimo_scan_res.csv and rebuild the two filtered levels')
 
-    # fimo2boltz
+    # fimo2yaml
     p = sub_parsers.add_parser(
-        'fimo2boltz',
-        help='Filter FIMO hits, attach TF/promoter/MSA metadata, emit per-row Boltz input FASTAs',
+        'fimo2yaml',
+        help='Convert model-level FIMO results into MSA-backed prediction YAMLs',
+        description=(
+            'Read filtered_model_scan_level_res.csv from fimo-scan and write '
+            'full-length YAMLs with matching A3M files.'
+        ),
+        epilog=(
+            'Example:\n'
+            '  boltzscan fimo2yaml \\\n'
+            '    --fimo RUN/scan/filtered_model_scan_level_res.csv \\\n'
+            '    --msa-dir RUN/msa --output RUN/inputs'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('-f', '--fimo', required=True,
-        help='Raw FIMO results CSV (e.g. tasks/llx/cisdb/fimo_results_raw.csv.gz)')
-    p.add_argument('-t', '--tf-fasta', required=True,
-        help='TF protein FASTA; record IDs must match TF ids in tf2pwms')
-    p.add_argument('-j', '--tf2pwms', required=True,
-        help='JSON mapping TF_id -> [motif_id, ...]')
-    p.add_argument('-r', '--promoter-fasta', required=True,
-        help='Promoter FASTA whose record IDs match sequence_name in the FIMO results')
+        help='filtered_model_scan_level_res.csv produced by fimo-scan')
     p.add_argument('-m', '--msa-dir', required=True,
-        help='Directory containing per-TF MSA subdirs (each with 0.a3m); subdir names use "_" not "."')
-    p.add_argument('-o', '--output', required=True, help='Output directory; FASTAs land in <output>/boltzscan_input/')
-    p.add_argument('-p', '--pvalue', type=float, default=1e-5, help='Drop FIMO hits with pvalue > this (default: 1e-5)')
-    p.add_argument('-O', '--overlap-thresh', type=float, default=0.0,
-        help='Overlap-ratio threshold for filter_fimo_by_seq_and_overlap (default: 0.0)')
-    p.add_argument('-e', '--extend-range', type=int, default=5,
-        help='Bases added on each side when extracting the motif sub-sequence (default: 5)')
-    p.add_argument('-L', '--layout', default='auto', choices=['sub', 'all', 'auto'],
-        help='Output layout: "sub"=split BOLTZ_INPUT/ into subdir_NNN/, "all"=flat, '
-             '"auto"=sub if > --auto-threshold files else all (default: auto)')
-    p.add_argument('-a', '--auto-threshold', type=int, default=20000,
-        help='File-count cutoff used by --layout auto (default: 20000)')
-    p.add_argument('-n', '--num-subdirs', type=int, default=100,
-        help='Number of subdirectories to split BOLTZ_INPUT/ into (default: 100)')
-    p.add_argument('-w', '--max-workers', type=int, default=8, help='Threads for parallel FASTA writes (default: 8)')
+        help='Directory containing one <TF_id>/0.a3m per TF')
+    p.add_argument('-o', '--output', required=True,
+        help='Input root containing full/')
+
+    p = sub_parsers.add_parser(
+        'find-interface',
+        help='Find one reusable TF-DNA interface and write cropped prediction inputs',
+        description=(
+            'Run or reuse one full-length TF-dsDNA prediction per TF to find '
+            'protein residues within 5 A of DNA, then write interface+flank YAMLs '
+            'and synchronously cropped A3M files for every DNA candidate in RUN.'
+        ),
+        epilog=(
+            'Example:\n'
+            '  boltzscan find-interface --run tomato_run\n\n'
+            'The model and flank are restored from run_config.json. Use --flank '
+            'only for a manually assembled run.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('-r', '--run', required=True,
+        help='Prepared BoltzScan run containing the scan table and localizer inputs')
+    p.add_argument('--flank', type=int, default=None,
+        help='AA flank around the predicted contact span (default: RUN configuration)')
+    p.add_argument('--cutoff', type=float, default=5.0,
+        help='Heavy-atom protein-DNA contact cutoff in angstrom (default: 5.0)')
+    p.add_argument('-m', '--model', default=None, choices=PREDICTION_MODELS,
+        help='Prediction model (default: RUN configuration)')
+    p.add_argument('--seed', type=int, default=None,
+        help='Prediction seed (default: RUN configuration)')
 
     # hit2fasta
     p = sub_parsers.add_parser(
         'hit2fasta',
-        help='Build a candidate TF protein FASTA from motif hit statistics',
+        help='Extract TF proteins whose motifs have retained promoter hits',
+        description=(
+            'Extract a smaller TF protein FASTA from a FIMO scan table. '
+            'Use filtered_promoter_scan_level_res.csv for the final retained '
+            'promoter candidates; the table must contain motif_id.'
+        ),
+        epilog=(
+            'Example:\n'
+            '  boltzscan hit2fasta --scan-table '
+            'RUN/scan/filtered_promoter_scan_level_res.csv \\\n'
+            '    --tf2pwms RUN/pwm/tf2pwms.json \\\n'
+            '    --protein-fasta data/genome/sly/tf_proteins.fasta \\\n'
+            '    --output RUN/candidate_tf_proteins.fasta\n\n'
+            'Output: one FASTA record per matched TF, plus a sibling .log file.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('-s', '--hit-statistics', required=True,
-        help='hit_statistics.csv from cisTarget/FIMO output')
+    p.add_argument('-s', '--scan-table', dest='hit_statistics',
+        metavar='SCAN_TABLE', required=True,
+        help='Recommended: filtered_promoter_scan_level_res.csv from fimo-scan')
     p.add_argument('-j', '--tf2pwms', required=True,
-        help='JSON mapping TF_id -> [motif_id, ...]')
+        help='tf2pwms.json produced by the matching map-pwm run')
     p.add_argument('-p', '--protein-fasta', required=True,
-        help='Protein FASTA containing TF sequences')
+        help='Source TF protein FASTA; record IDs must equal tf2pwms TF IDs')
     p.add_argument('-o', '--output', required=True,
-        help='Output candidate TF protein FASTA')
+        help='Output FASTA containing only TFs with retained promoter hits')
     p.add_argument('--motif-col', default='motif_id',
         help='Motif ID column in hit statistics (default: motif_id)')
 
@@ -169,20 +334,86 @@ def _build_parser():
 
     # build-pwm-refs
     p = sub_parsers.add_parser('build-pwm-refs',
-        help='Stage A: download cisBP+JASPAR, extract reference DBDs, cache the reference store')
+        help='Maintainer: download sources, build+cluster PWM refs, and package a release')
     p.add_argument('--refs', default='data/pwms/_refs', help='Reference store dir (default: data/pwms/_refs)')
     p.add_argument('-m', '--pfam', default=None)
     p.add_argument('-c', '--cpu', type=int, default=8)
     p.add_argument('--no-cisbp', action='store_true')
     p.add_argument('--no-jaspar', action='store_true')
     p.add_argument('--refresh', action='store_true', help='Re-download even if present')
+    p.add_argument('--qthresh', type=float, default=0.05,
+        help='Tomtom q-value cutoff for representative PWM clustering (default: 0.05)')
+    p.add_argument('--tomtom', default=None,
+        help='Path to tomtom (default: PATH or the meme conda env)')
+    p.add_argument('--archive', default=None,
+        help='Release tar.gz path (default: <refs-parent>/boltzscan_pwm_refs.tar.gz)')
+    p.add_argument('--no-archive', action='store_true',
+        help='Build and cluster the store without creating a release archive')
+
+    # install-pwm-refs
+    p = sub_parsers.add_parser(
+        'install-pwm-refs',
+        help='User: download, SHA256-verify, and install a prebuilt PWM reference release',
+    )
+    p.add_argument('--url', default=DEFAULT_REFERENCE_RELEASE_URL,
+        help=(
+            'Release URL or local tar.gz path '
+            f'(default: built-in {DEFAULT_REFERENCE_RELEASE} Google Drive release)'
+        ))
+    p.add_argument('--sha256', default=DEFAULT_REFERENCE_RELEASE_SHA256,
+        help=(
+            'Expected archive SHA256 '
+            f'(default: built-in {DEFAULT_REFERENCE_RELEASE} checksum)'
+        ))
+    p.add_argument('--refs', default='data/pwms/_refs',
+        help='Installation directory (default: data/pwms/_refs)')
+    p.add_argument('--replace', action='store_true',
+        help='Move an existing store to _refs.backup_<timestamp> before installing')
 
     # map-pwm
-    p = sub_parsers.add_parser('map-pwm',
-        help='Stage B: map a species TF FASTA to reference motifs via DBD %%ID (no network)')
+    p = sub_parsers.add_parser(
+        'map-pwm',
+        help='Stage B: map a species TF FASTA to reference motifs via DBD %%ID (no network)',
+        description=(
+            'Transfer reference PWMs to TFs by Pfam DBD identity. Processing order: '
+            'optional LOSO filtering -> DBD BLAST -> identity threshold -> optional '
+            'representative-PWM collapse. Defaults use family-specific thresholds and '
+            'cluster representatives.'
+        ),
+        epilog='''
+Examples:
+  # Default: all references, family thresholds, representative PWMs
+  boltzscan map-pwm -f TF.fa -o OUT
+
+  # Reuse pfam.domtbl from find-tf instead of running hmmsearch again
+  boltzscan map-pwm -f TF.fa -o OUT --domtbl pfam.domtbl
+
+  # Keep every transferred original PWM
+  boltzscan map-pwm -f TF.fa -o OUT --no-pwm-cluster
+
+  # LOSO before BLAST; recluster retained motifs and output representatives
+  boltzscan map-pwm -f TF.fa -o OUT --exclude-species "Solanum lycopersicum"
+
+  # LOSO before BLAST; output all retained original PWMs
+  boltzscan map-pwm -f TF.fa -o OUT --exclude-species "Solanum lycopersicum" --no-pwm-cluster
+
+  # Require at least 80% DBD identity for every TF family
+  boltzscan map-pwm -f TF.fa -o OUT --threshold-mode global --threshold 0.80
+
+Main outputs:
+  OUT/tf2pwms.json       TF -> scan-ready motif IDs
+  OUT/map_report.tsv     best reference evidence per transferred motif
+  OUT/pwm_mapping.json   mapping provenance and cluster mode
+  OUT/{txt,meme}/        copied PWM files
+  OUT/refs_loso/         filtered reference subset, only with --exclude-species
+''',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument('-f', '--proteins', required=True, help='Species TF protein FASTA')
     p.add_argument('-o', '--output', required=True, help='Output dir, e.g. data/pwms/cm_pwms')
     p.add_argument('--refs', default='data/pwms/_refs')
+    p.add_argument('--exclude-species', action='append', default=[],
+        help='LOSO species removed before BLAST; repeat for multiple species')
     p.add_argument('--domtbl', default=None, help='Reuse a find-tf pfam.domtbl (else run hmmsearch)')
     p.add_argument('--threshold-mode', default='family', choices=['family', 'global'])
     p.add_argument('--threshold', type=float, default=0.70, help='Global %%ID cutoff (global mode)')
@@ -191,64 +422,61 @@ def _build_parser():
     p.add_argument('--makeblastdb', default=None)
     p.add_argument('-m', '--pfam', default=None)
     p.add_argument('-c', '--cpu', type=int, default=8)
-    p.add_argument('--collapse-clusters', action='store_true',
-        help='Collapse transferred motifs to cluster representatives (needs cluster-motifs first)')
-
-    # cluster-motifs
-    p = sub_parsers.add_parser('cluster-motifs',
-        help='Cluster reference motifs per family (Tomtom) into a non-redundant set -> motif_clusters.tsv')
-    p.add_argument('--refs', default='data/pwms/_refs', help='Reference store dir')
-    p.add_argument('--qthresh', type=float, default=0.05,
-        help='Tomtom q-value cutoff for merging motifs (default: 0.05)')
-    p.add_argument('--tomtom', default=None, help='Path to tomtom (default: PATH or the meme conda env)')
-    p.add_argument('-c', '--cpu', type=int, default=8, help='Families clustered in parallel (default: 8)')
-
-    # cpg-islands
-    p = sub_parsers.add_parser('cpg-islands',
-        help='Scan a promoter FASTA for CpG islands (cisdb for CpG-binding/CXXC factors, e.g. DDR1)')
-    p.add_argument('-f', '--fasta', required=True, help='Promoter FASTA')
-    p.add_argument('-o', '--output', required=True, help='Output dir (cpg_per_promoter.tsv, cpg_islands.bed, cpg_target_genes.txt)')
-    p.add_argument('--window', type=int, default=200, help='Min island length / window bp (default: 200)')
-    p.add_argument('--min-gc', type=float, default=0.5, help='Min GC fraction (default: 0.5)')
-    p.add_argument('--min-oe', type=float, default=0.6, help='Min observed/expected CpG ratio (default: 0.6)')
+    p.add_argument('--no-pwm-cluster', action='store_true',
+        help='Explicitly map all unclustered PWMs; default uses representatives')
 
     # predict
     p = sub_parsers.add_parser('predict',
-        help='Predict protein-DNA complexes from a YAML input dir, choosing --engine boltz or esmfold')
+        help='Predict protein-DNA complexes from a YAML input directory',
+        description=(
+            'Predict every *.yaml job in one prepared input directory. Choose the '
+            'model directly; ESMFold2/Boltz1/Boltz2 keep native scientific defaults, '
+            'while the Boltz1/2 ODE variants use the built-in BoltzScan protocol. '
+            'A preflight validates TF-dsDNA sequences and MSA query consistency.'
+        ),
+        epilog=(
+            'Examples:\n'
+            '  boltzscan predict -i RUN/inputs/full -o RUN -m esmfold2\n'
+            '  boltzscan predict -i RUN/inputs/crop20 -o RUN -m boltz2 --seed 42\n\n'
+            'All Boltz models require a matching local MSA for every protein; '
+            'ESMFold2 also permits explicit no-MSA input.\n'
+            'Boltz resources are automatic: preprocessing uses available CPU cores; '
+            'the inference DataLoader uses 2 CPU workers.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument('-i', '--input-dir', required=True, help='Directory of Boltz-style input YAMLs')
-    p.add_argument('-o', '--output', required=True, help='Output dir (predictions/<name>/...cif + confidence json)')
-    p.add_argument('-e', '--engine', default='boltz', choices=['boltz', 'esmfold'],
-        help='Inference engine (default: boltz)')
-    p.add_argument('-m', '--model', default='boltz_ode',
-        help='boltz engine model: boltz_ode|boltz1|boltz2 (ignored for esmfold)')
-    p.add_argument('--sampling-steps', type=int, default=None,
-        help='Sampling steps (default: boltz 2, esmfold 50)')
-    p.add_argument('--seed', type=int, default=42)
-    # boltz-engine-only knobs (ignored for esmfold)
-    p.add_argument('-pt', '--preprocessing-threads', type=int, default=1,
-        help='[boltz] CPU threads for boltz preprocessing (default: 1)')
-    p.add_argument('-nw', '--num-workers', type=int, default=2,
-        help='[boltz] DataLoader workers during predict; high values often deadlock with CUDA (default: 2)')
-    p.add_argument('-or', '--override', action='store_true',
-        help='[boltz] rerun existing predictions (passes --override to boltz)')
+    p.add_argument('-o', '--output', required=True,
+        help='Run root; inference keeps the engine-native output layout')
+    p.add_argument('-m', '--model', default='esmfold2', choices=PREDICTION_MODELS,
+        help='Prediction model (default: esmfold2)')
+    p.add_argument('--seed', type=int, default=None,
+        help='Optional random seed (default: model native behavior)')
 
     # ipsae
     p = sub_parsers.add_parser(
         'ipsae',
-        help='Calculate TF-DNA ipSAE ranking scores and merge them into a score table',
+        help='Score a completed run and restore promoter-level results',
+        description=(
+            'Calculate model-level TF-DNA ipSAE scores, then join them through '
+            'model_id to every row in filtered_promoter_scan_level_res.csv. '
+            'Chain A is the TF and chains B/C are the DNA duplex. Cutoffs, '
+            'available full/crop arms, cached results, and CPU concurrency are automatic.'
+        ),
+        epilog=(
+            'Examples:\n'
+            '  boltzscan ipsae --run RUN\n'
+            '  boltzscan ipsae --run RUN --model boltz2\n\n'
+            'Usually --run is sufficient. Use --model only when RUN contains '
+            'prediction outputs from more than one model. Final files are written '
+            'under RUN/results/ at both model and promoter levels.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('-r', '--res-dir', required=True,
-        help='Boltz result directory or its predictions/ subdirectory')
-    p.add_argument('-s', '--score-file', default=None,
-        help='Optional input score table (.csv, .csv.gz, .tsv, or .tsv.gz)')
-    p.add_argument('-o', '--output', default=None,
-        help='Output CSV path for the scored table (default: <res-dir>/ipsae_scored.csv)')
-    p.add_argument('-i', '--id-col', default=None,
-        help='Optional score table column matching Boltz prediction directory names')
-    p.add_argument('-f', '--force', action='store_true',
-        help='Recalculate IPSAE even when an existing *_10_10.txt file is present')
-    p.add_argument('-p', '--processes', type=int, default=1,
-        help='Number of concurrent IPSAE calculations (default: 1)')
+    p.add_argument('-r', '--run', required=True,
+        help='Run directory containing scan/, <model>_prediction/, and results/')
+    p.add_argument('-m', '--model', choices=PREDICTION_MODELS, default=None,
+        help='Prediction model (default: auto-detect the only model in RUN)')
 
     # txt2meme
     p = sub_parsers.add_parser(
@@ -267,26 +495,6 @@ def _build_parser():
         help='FASTA file used to calculate A,C,G,T background frequencies')
     p.add_argument('-f', '--force', action='store_true',
         help='Overwrite existing .meme files')
-
-    # esm-embed
-    p = sub_parsers.add_parser(
-        'esm-embed',
-        help='Embed protein sequences with ESMC-6B (runs in the esmfold2 conda env)',
-    )
-    p.add_argument('-f', '--fasta', required=True, help='Input protein FASTA')
-    p.add_argument('-o', '--output', required=True, help='Output .npz path for embeddings')
-    p.add_argument('-w', '--weights', default=None,
-        help='ESMC-6B weights directory (default: $BOLTZSCAN_ESMC_WEIGHTS or the local esm_weights/ESMC-6B)')
-    p.add_argument('-p', '--pooling', default='mean', choices=['mean', 'cls', 'none'],
-        help='mean/cls -> [N,D]; none -> per-residue [L,D] arrays (default: mean)')
-    p.add_argument('-d', '--device', default='cuda', help='torch device (default: cuda)')
-    p.add_argument('-b', '--batch-size', type=int, default=8, help='Sequences per batch (default: 8)')
-    p.add_argument('-L', '--max-len', type=int, default=None,
-        help='Truncate sequences to this many residues (default: no truncation)')
-    p.add_argument('--dtype', default='bfloat16', choices=['bfloat16', 'float16', 'float32'],
-        help='Model/compute dtype (default: bfloat16; forced to float32 on CPU)')
-    p.add_argument('--python-exe', default=None,
-        help='Python interpreter to run the worker (default: $BOLTZSCAN_ESM_PYTHON or the esmfold2 env)')
 
     # valid
     p = sub_parsers.add_parser(
@@ -308,65 +516,153 @@ def _build_parser():
 
 
 def _cmd_msa(args):
-    from boltzscan.cropd2p.run_msa import run_msa_mutil
-    from boltzscan.cropd2p.disopred import batch_run_disoreder
+    from boltzscan.msa import DEFAULT_MSA_SERVER_URL, run_msa
 
-    print(f"Running MSA on FASTA file: {args.fasta_file}")
-    batch_run_disoreder.split_fasta(args.fasta_file, args.output_dir)
-    files_lst = [str(i) for i in Path(args.output_dir).iterdir() if i.suffix == '.fasta']
-    result = run_msa_mutil(fasta_files=files_lst, save_dir=args.output_dir, n_cpu=args.cpus)
-    if result:
-        print(f"MSA completed successfully. Results saved to: {args.output_dir}")
-    else:
-        print("MSA processing failed or no results generated.")
-
-
-def _cmd_cistarg(args):
-    run_cistarg_with_tf_aggregation(
-        target_fasta=args.fasta,
-        motif_dir=args.motif_dir,
-        tf2pwms_path=args.tf2pwms,
-        output_dir=args.output,
-        motif_agg=args.motif_agg,
-        tf_agg=args.tf_agg,
-        pvalue_thresh=args.pvalue_thresh,
-        max_stored_scores=args.max_stored_scores,
-        motif_pseudo=args.motif_pseudo,
-        top_n=args.top_n,
-        analyze_hits=not args.no_analyze,
-        tf_fasta=args.tf_fasta,
-        reuse=args.reuse,
+    server_url = args.server_url or DEFAULT_MSA_SERVER_URL
+    try:
+        summary = run_msa(
+            args.fasta_file,
+            args.output_dir,
+            jobs=args.jobs,
+            server_url=server_url,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f"boltzscan msa: {exc}") from None
+    print(
+        f"MSA complete: {summary.requested} proteins; "
+        f"generated={summary.completed}, reused={summary.skipped}; "
+        f"output={args.output_dir}"
     )
 
 
-def _cmd_fimo2boltz(args):
-    build_boltz_input_from_fimo(
-        fimo_csv=args.fimo,
-        tf_fasta=args.tf_fasta,
-        tf2pwms_path=args.tf2pwms,
-        promoter_fasta=args.promoter_fasta,
-        msa_dir=args.msa_dir,
-        output_dir=args.output,
-        pvalue_thresh=args.pvalue,
-        overlap_thresh=args.overlap_thresh,
-        extend_range=args.extend_range,
-        layout=args.layout,
-        auto_threshold=args.auto_threshold,
-        num_subdirs=args.num_subdirs,
-        max_workers=args.max_workers,
+def _cmd_doctor(args):
+    from boltzscan.doctor import run_doctor
+
+    try:
+        summary = run_doctor(
+            fix=args.fix,
+            profile=args.profile,
+            refs=args.refs,
+            pfam=args.pfam,
+            tool_dir=args.tool_dir,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f'boltzscan doctor: {exc}') from None
+    if summary.failed_required:
+        raise SystemExit(1)
+
+
+def _cmd_run(args):
+    from boltzscan.tfdna import run_tf_dna_workflow
+
+    try:
+        summary = run_tf_dna_workflow(
+            tf_fasta=args.tf,
+            promoters=args.promoters,
+            out_dir=args.run,
+            refs=args.refs,
+            exclude_species=args.exclude_species,
+            collapse_clusters=not args.no_pwm_cluster,
+            pvalue=args.pvalue,
+            overlap_thresh=args.overlap_thresh,
+            dna_flank=args.dna_flank,
+            crop=args.crop,
+            model=args.model,
+            seed=args.seed,
+            stage=args.stage,
+            reuse=args.reuse,
+        )
+    except (FileExistsError, FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f"boltzscan run: {exc}") from None
+    print(f"Run directory: {summary.out_dir}")
+
+
+def _cmd_wash(args):
+    from boltzscan.predict.wash import wash_prediction_outputs
+
+    try:
+        summary = wash_prediction_outputs(
+            args.run,
+            model=args.model,
+            mode=args.mode,
+            arms=args.arms,
+        )
+    except (FileExistsError, FileNotFoundError, OSError, ValueError) as exc:
+        raise SystemExit(f"boltzscan wash: {exc}") from None
+    print(
+        f"Washed {summary.files} files from {', '.join(summary.arms)} "
+        f"with mode={summary.mode} -> {summary.method_root}"
     )
+    print(f"Tracking manifest: {summary.manifest}")
+
+
+def _cmd_fimo_scan(args):
+    from boltzscan.fimocistarget.runner import run_fimo_scan
+
+    try:
+        run_fimo_scan(
+            target_fasta=args.fasta,
+            motif_dir=args.motif_dir,
+            tf2pwms_path=args.tf2pwms,
+            tf_fasta=args.tf_fasta,
+            output_dir=args.output,
+            pvalue_thresh=args.pvalue_thresh,
+            overlap_thresh=args.overlap_thresh,
+            dna_flank=args.dna_flank,
+            no_pwm_cluster=args.no_pwm_cluster,
+            reuse=args.reuse,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f'boltzscan fimo-scan: {exc}') from None
+
+
+def _cmd_fimo2yaml(args):
+    try:
+        full_dir, _crop_summary = write_fimo_model_yamls(
+            model_table=args.fimo,
+            msa_dir=args.msa_dir,
+            domtbl_path=None,
+            output_dir=args.output,
+            crop=None,
+        )
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        raise SystemExit(f'boltzscan fimo2yaml: {exc}') from None
+    print(f'Wrote full-length model YAMLs: {full_dir}')
+
+
+def _cmd_find_interface(args):
+    from boltzscan.interface import run_interface_stage
+
+    try:
+        summary = run_interface_stage(
+            args.run,
+            flank=args.flank,
+            cutoff=args.cutoff,
+            model=args.model,
+            seed=args.seed,
+        )
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f'boltzscan find-interface: {exc}') from None
+    print(
+        f'Found reusable interfaces for {summary.n_tfs} TF(s); wrote '
+        f'{summary.n_model_inputs} cropped inputs -> {summary.crop_input_dir}'
+    )
+    print(f'Interface coordinates: {summary.boundaries}')
 
 
 def _cmd_candidate_tf_fasta(args):
     from boltzscan.utils.tf_candidates import build_candidate_tf_fasta
 
-    summary = build_candidate_tf_fasta(
-        hit_statistics=args.hit_statistics,
-        tf2pwms_path=args.tf2pwms,
-        protein_fasta=args.protein_fasta,
-        output=args.output,
-        motif_col=args.motif_col,
-    )
+    try:
+        summary = build_candidate_tf_fasta(
+            hit_statistics=args.hit_statistics,
+            tf2pwms_path=args.tf2pwms,
+            protein_fasta=args.protein_fasta,
+            output=args.output,
+            motif_col=args.motif_col,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(f'boltzscan hit2fasta: {exc}') from None
     print(
         f"Wrote {summary.output} "
         f"({summary.written_tfs}/{summary.candidate_tfs} candidate TFs with protein sequence)"
@@ -413,90 +709,155 @@ def _cmd_find_tf(args):
 
 
 def _cmd_build_pwm_refs(args):
+    from boltzscan.pwmmap.archive import pack_reference_store
+    from boltzscan.pwmmap.cluster import cluster_reference_motifs
     from boltzscan.pwmmap.refs import build_reference_db
-    store = build_reference_db(refs_dir=args.refs, pfam=args.pfam, cpu=args.cpu,
-                               refresh=args.refresh,
-                               include_cisbp=not args.no_cisbp,
-                               include_jaspar=not args.no_jaspar)
+
+    store = build_reference_db(
+        refs_dir=args.refs,
+        pfam=args.pfam,
+        cpu=args.cpu,
+        refresh=args.refresh,
+        include_cisbp=not args.no_cisbp,
+        include_jaspar=not args.no_jaspar,
+    )
     print(f"Reference store ready at {store.root}")
+    clusters_path = Path(args.refs) / 'motif_clusters.tsv'
+    if args.refresh or not clusters_path.is_file():
+        clusters = cluster_reference_motifs(
+            refs_dir=args.refs,
+            tomtom=args.tomtom,
+            qthresh=args.qthresh,
+            cpu=args.cpu,
+        )
+        print(
+            f"Representative PWMs: {clusters.n_clustered} motifs -> "
+            f"{clusters.n_clusters} clusters"
+        )
+    else:
+        print(f"Representative PWM map reused: {clusters_path}")
+
+    if not args.no_archive:
+        archive = Path(args.archive) if args.archive else (
+            Path(args.refs).parent / 'boltzscan_pwm_refs.tar.gz'
+        )
+        release = pack_reference_store(args.refs, archive)
+        print(
+            f"Release archive: {release.archive} "
+            f"({release.size_bytes / 1024 / 1024:.1f} MiB)"
+        )
+        print(f"SHA256: {release.sha256}")
+        print(f"Checksum file: {release.checksum_file}")
+
+
+def _cmd_install_pwm_refs(args):
+    from boltzscan.pwmmap.archive import install_reference_store
+
+    print(f"PWM reference release: {args.url}")
+    print(f"Expected SHA256: {args.sha256}")
+    try:
+        summary = install_reference_store(
+            args.url,
+            args.refs,
+            args.sha256,
+            replace=args.replace,
+            progress=lambda message: print(message, flush=True),
+        )
+    except (FileExistsError, FileNotFoundError, OSError, ValueError) as exc:
+        raise SystemExit(f'boltzscan install-pwm-refs: {exc}') from None
+    print(
+        f"Installed PWM refs: {summary.n_dbd_rows} DBD rows, "
+        f"{summary.n_meme_motifs} scan-ready motifs -> {summary.refs_dir}"
+    )
+    print(f"Verified SHA256: {summary.archive_sha256}")
+    if summary.backup_dir is not None:
+        print(f"Previous store moved to: {summary.backup_dir}")
 
 
 def _cmd_map_pwm(args):
     from boltzscan.pwmmap.mapper import map_species
-    s = map_species(species_fasta=args.proteins, out_dir=args.output, refs_dir=args.refs,
-                    domtbl=args.domtbl, threshold_mode=args.threshold_mode,
-                    threshold=args.threshold, min_cov=args.min_cov,
-                    blastp=args.blastp, makeblastdb=args.makeblastdb,
-                    pfam=args.pfam, cpu=args.cpu,
-                    collapse_clusters=args.collapse_clusters)
+
+    try:
+        refs_for_mapping = Path(args.refs)
+        excluded_species = tuple(
+            species.strip() for species in args.exclude_species if species.strip()
+        )
+        if excluded_species:
+            from boltzscan.pwmmap.leaveout import create_reference_subset
+
+            refs_for_mapping = Path(args.output) / 'refs_loso'
+            loso = create_reference_subset(
+                args.refs,
+                refs_for_mapping,
+                exclude_species=excluded_species,
+            )
+            print(
+                f"LOSO reference subset: retained {loso.n_retained_dbd_rows}/"
+                f"{loso.n_input_dbd_rows} DBD records after excluding "
+                f"{', '.join(excluded_species)}"
+            )
+            if not args.no_pwm_cluster:
+                from boltzscan.pwmmap.cluster import cluster_reference_motifs
+
+                clusters = cluster_reference_motifs(
+                    refs_dir=refs_for_mapping,
+                    cpu=args.cpu,
+                )
+                print(
+                    f"LOSO representative PWMs: {clusters.n_clustered} motifs -> "
+                    f"{clusters.n_clusters} clusters"
+                )
+
+        s = map_species(species_fasta=args.proteins, out_dir=args.output,
+                        refs_dir=refs_for_mapping,
+                        domtbl=args.domtbl, threshold_mode=args.threshold_mode,
+                        threshold=args.threshold, min_cov=args.min_cov,
+                        blastp=args.blastp, makeblastdb=args.makeblastdb,
+                        pfam=args.pfam, cpu=args.cpu,
+                        collapse_clusters=not args.no_pwm_cluster)
+    except (FileNotFoundError, ModuleNotFoundError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f'boltzscan map-pwm: {exc}') from None
     print(f"Wrote {s.out_dir}/tf2pwms.json "
           f"({s.n_mapped}/{s.n_species_tfs} TFs mapped, {s.n_motifs} motifs)")
 
 
-def _cmd_cluster_motifs(args):
-    from boltzscan.pwmmap.cluster import cluster_reference_motifs
-    s = cluster_reference_motifs(refs_dir=args.refs, tomtom=args.tomtom,
-                                 qthresh=args.qthresh, cpu=args.cpu)
-    print(f"Wrote {s.clusters_tsv} "
-          f"({s.n_clustered} motifs with PWM -> {s.n_clusters} clusters "
-          f"across {s.n_families} families; {s.n_motifs} total in map)")
-
-
 def _cmd_promoter(args):
-    """Unified promoter extraction: --format fasta (FASTA only) or both (BED+FASTA)."""
-    if args.format == 'both':
-        print(f"Extracting promoter BED+FASTA using GFF: {args.gff}")
-        extract_promoters_both(args)            # writes <output>.bed + <output>.fasta
-    else:
-        import copy
-        a = copy.copy(args)
-        a.output = args.output if args.output.endswith('.fasta') else args.output + '.fasta'
-        print(f"Extracting promoter FASTA using GFF: {args.gff}")
-        extract_promoters(a)                    # writes <output>.fasta
+    """Unified promoter extraction for BED, FASTA, or both."""
+    print(f"Extracting promoter {args.format.upper()} using GFF: {args.gff}")
+    extract_promoter_regions(args)
 
 
 def _cmd_predict(args):
-    from boltzscan.predict.runners import run_boltz, run_esmfold
-    if args.engine == 'boltz':
-        steps = args.sampling_steps if args.sampling_steps is not None else 2
-        rc = run_boltz(args.input_dir, args.output, model=args.model,
-                       sampling_steps=steps, seed=args.seed,
-                       preprocessing_threads=args.preprocessing_threads,
-                       num_workers=args.num_workers, override=args.override)
-    else:
-        steps = args.sampling_steps if args.sampling_steps is not None else 50
-        rc = run_esmfold(args.input_dir, args.output, sampling_steps=steps, seed=args.seed)
+    from boltzscan.predict.runners import native_prediction_dir, run_prediction
+
+    try:
+        rc = run_prediction(
+            input_dir=args.input_dir,
+            out_dir=args.output,
+            model=args.model,
+            seed=args.seed,
+        )
+        native_output = native_prediction_dir(args.input_dir, args.output, args.model)
+    except ValueError as exc:
+        raise SystemExit(f'boltzscan predict: {exc}') from None
     if rc != 0:
-        raise SystemExit(f"{args.engine} prediction exited with code {rc}")
-    print(f"{args.engine} prediction done -> {args.output}")
-
-
-def _cmd_cpg_islands(args):
-    from boltzscan.fimocistarget.cpg import scan_promoters_for_cpg
-    s = scan_promoters_for_cpg(args.fasta, args.output, window=args.window,
-                               min_gc=args.min_gc, min_oe=args.min_oe)
-    print(f"Wrote {s.out_dir} "
-          f"({s.n_with_island}/{s.n_promoters} promoters with a CpG island, "
-          f"{s.n_islands} islands)")
+        raise SystemExit(f"{args.model} prediction exited with code {rc}")
+    print(f"{args.model} native prediction done -> {native_output}")
+    print("Run `boltzscan wash --help` to publish the shared prediction layout.")
 
 
 def _cmd_ipsae(args):
-    from boltzscan.utils.ipsae_score import print_ipsae_warnings, score_ipsae_table
+    from boltzscan.tfdna import score_tf_dna_run
 
-    summary = score_ipsae_table(
-        res_dir=args.res_dir,
-        score_file=args.score_file,
-        output=args.output,
-        id_col=args.id_col,
-        force=args.force,
-        processes=args.processes,
-    )
-    print_ipsae_warnings(summary.warnings)
-    print(
-        f"Wrote {summary.output} "
-        f"({summary.matched_rows} matched rows, "
-        f"{summary.scored_predictions}/{summary.total_predictions} predictions scored)"
-    )
+    processes = available_cpu_count()
+    try:
+        score_tf_dna_run(
+            out_dir=args.run,
+            model=args.model,
+            processes=processes,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(f'boltzscan ipsae: {exc}') from None
 
 
 def _cmd_txt2meme(args):
@@ -518,23 +879,6 @@ def _cmd_txt2meme(args):
     bg_text = ','.join(f'{value:.4f}' for value in background)
     print(f"Background A,C,G,T: {bg_text}")
     print(f"Wrote {len(output_files)} MEME file(s) to {args.output}")
-
-
-def _cmd_esm_embed(args):
-    from boltzscan.esm_embed.runner import run_esmc_embed
-
-    out = run_esmc_embed(
-        fasta=args.fasta,
-        output=args.output,
-        weights=args.weights,
-        pooling=args.pooling,
-        device=args.device,
-        batch_size=args.batch_size,
-        max_len=args.max_len,
-        dtype=args.dtype,
-        python_exe=args.python_exe,
-    )
-    print(f"Wrote ESMC-6B embeddings to {out}")
 
 
 def _cmd_valid(args):
@@ -576,24 +920,23 @@ def _cmd_valid(args):
 
 
 _DISPATCH = {
+    'doctor': _cmd_doctor,
+    'run': _cmd_run,
+    'wash': _cmd_wash,
     'msa': _cmd_msa,
     'promoter': _cmd_promoter,
-    'extract-bed': lambda a: (print(f"Extracting genomic regions from GFF: {a.input}"),
-                              extract_bed_regions(a.input, a.output, a.type, a.name)),
-    'cistarg': _cmd_cistarg,
-    'fimo2boltz': _cmd_fimo2boltz,
+    'fimo-scan': _cmd_fimo_scan,
+    'fimo2yaml': _cmd_fimo2yaml,
+    'find-interface': _cmd_find_interface,
     'hit2fasta': _cmd_candidate_tf_fasta,
     'find-tf': _cmd_find_tf,
     'build-pwm-refs': _cmd_build_pwm_refs,
+    'install-pwm-refs': _cmd_install_pwm_refs,
     'map-pwm': _cmd_map_pwm,
-    'cluster-motifs': _cmd_cluster_motifs,
-    'cpg-islands': _cmd_cpg_islands,
     'predict': _cmd_predict,
     'ipsae': _cmd_ipsae,
     'txt2meme': _cmd_txt2meme,
-    'esm-embed': _cmd_esm_embed,
     'valid': _cmd_valid,
-    'extract_pd_from_pdb': lambda a: print(f"Extracting protein domains from PDB file: {a.pdb_file}"),
 }
 
 
@@ -614,13 +957,74 @@ def _parse_background(value):
     return background
 
 
+def _command_log_path(args):
+    """Choose the run-root log for a command.
+
+    ``boltzscan run`` is the production interface. Lower-level commands infer
+    the same root when their output follows the standard RUN layout.
+    """
+    command = args.command
+    if command == 'doctor':
+        from boltzscan.toolchain import managed_tool_root
+
+        return managed_tool_root(args.tool_dir) / 'doctor.log'
+    if command == 'run':
+        return Path(args.run) / 'run.log'
+    if command == 'build-pwm-refs':
+        return Path(args.refs) / f'{command}.log'
+    if command == 'install-pwm-refs':
+        return Path(args.refs).parent / 'install-pwm-refs.log'
+    if command == 'wash':
+        return Path(args.run) / f'{command}.log'
+    if command == 'find-interface':
+        return Path(args.run) / 'find-interface.log'
+    if command == 'msa':
+        output = Path(args.output_dir)
+        root = output.parent if output.name == 'msa' else output
+        return root / 'msa.log'
+    if command == 'promoter':
+        output = Path(args.output)
+        return output.parent / 'promoter.log'
+    if command == 'ipsae':
+        return Path(args.run) / 'ipsae.log'
+    if command == 'valid':
+        if getattr(args, 'output', None) is None:
+            return Path(args.res_dir) / f'{command}.log'
+        output = Path(args.output)
+        root = output.parent.parent if output.parent.name == 'results' else output.parent
+        return root / 'valid.log'
+    output = getattr(args, 'output', None)
+    if output is not None:
+        output = Path(output)
+        if command == 'hit2fasta' or output.suffix == '.meme':
+            return output.parent / f'{output.name}.log'
+        standard_component = {
+            'find-tf': {'find_tf', 'tf'},
+            'map-pwm': {'pwm'},
+            'fimo-scan': {'scan'},
+            'fimo2yaml': {'inputs'},
+        }.get(command, set())
+        root = output.parent if output.name in standard_component else output
+        return root / f'{command}.log'
+    return Path.cwd() / f'boltzscan-{command}.log'
+
+
 def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     handler = _DISPATCH.get(args.command)
     if handler is None:
         parser.error(f"Unknown command: {args.command}")
-    handler(args)
+    from boltzscan.runlog import CommandLog
+
+    command_argv = list(sys.argv[1:] if argv is None else argv)
+    command_log = _command_log_path(args)
+    with CommandLog(
+        command_log,
+        ['boltzscan', *command_argv],
+        args,
+    ):
+        handler(args)
 
 
 if __name__ == '__main__':

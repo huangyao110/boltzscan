@@ -27,14 +27,24 @@ def _blast(query_fasta, store, blastp, makeblastdb, cpu, min_cov, work_dir):
 def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
                 threshold_mode="family", threshold=0.70, min_cov=0.8,
                 blastp=None, makeblastdb=None, pfam=None, cpu=8,
-                collapse_clusters=False):
+                collapse_clusters=True):
     pfam = pfam or dbd.DEFAULT_PFAM
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     txt_dir = out_dir/"txt"; meme_dir = out_dir/"meme"
     txt_dir.mkdir(exist_ok=True); meme_dir.mkdir(exist_ok=True)
     store = load_ref_store(refs_dir)
     index = load_ref_index(refs_dir)            # dbd_seq_id -> row(family, motif_ids,...)
-    clusters = load_clusters(refs_dir) if collapse_clusters else {}
+    clusters = {}
+    if collapse_clusters:
+        clusters = load_clusters(refs_dir)
+        # Fail loud rather than silently return the full redundant motif set.
+        if not clusters:
+            raise SystemExit(
+                f"Representative PWM mapping is the default, but motif_clusters.tsv "
+                f"was not found in {refs_dir}. Reinstall it with "
+                f"`boltzscan install-pwm-refs --refs {refs_dir} --replace` or rebuild "
+                f"it with `boltzscan build-pwm-refs --refs {refs_dir}`. Pass "
+                "`--no-pwm-cluster` to explicitly use all unclustered PWMs.")
     bp, mk = align.resolve_blast_bins(blastp, makeblastdb)
 
     recs = dbd.extract_dbds(species_fasta, domtbl=domtbl, pfam=pfam, cpu=cpu, work_dir=out_dir)
@@ -90,5 +100,18 @@ def map_species(species_fasta, out_dir, refs_dir="data/pwms/_refs", domtbl=None,
     with open(out_dir/"map_report.tsv", "w") as fh:
         for row in report:
             fh.write("\t".join(map(str, row)) + "\n")
+
+    (out_dir / "pwm_mapping.json").write_text(json.dumps({
+        "schema_version": 1,
+        "reference_dir": str(Path(refs_dir).resolve()),
+        "pwm_clustered": bool(collapse_clusters),
+        "cluster_map": (
+            str((Path(refs_dir) / "motif_clusters.tsv").resolve())
+            if collapse_clusters else None
+        ),
+        "n_species_tfs": n_species_tfs,
+        "n_mapped_tfs": len(tf2pwms),
+        "n_scan_motifs": len(needed),
+    }, indent=2) + "\n")
 
     return MapSummary(out_dir, n_species_tfs, len(tf2pwms), len(needed))

@@ -1,4 +1,4 @@
-data/
+/data/
 input_other/
 outputs/
 output/
@@ -22,10 +22,19 @@ boltz_results_*/
 rose_grn/
 rose_grn.tar.gz
 
-# Vendored externals (each has its own repository; install separately)
-boltzscan/boltz/
-boltzscan/cropd2p/disopred/
-boltzscan/esm/
+# Vendored inference source is part of the BoltzScan release. Keep only the
+# upstream development/test material out of this repository and wheel.
+boltzscan/esm/.github/
+boltzscan/esm/_assets/
+boltzscan/esm/cookbook/
+boltzscan/esm/tests/
+boltzscan/esm/tools/
+boltzscan/esm/esm/widgets/
+boltzscan/esm/esm/**/*_test.py
+boltzscan/esm/.gitignore
+boltzscan/esm/.pre-commit-config.yaml
+boltzscan/esm/CONTRIBUTIONS.md
+boltzscan/esm/pixi.lock
 
 # Python build artifacts
 __pycache__/
@@ -37,4 +46,6 @@ dist/
 .ipynb_checkpoints/
 # experimental scratch + big artifacts (not part of the package)
 scratch/
+experiments/**/runs/
+.vscode/
 *.log

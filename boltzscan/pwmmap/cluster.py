@@ -11,15 +11,14 @@ else it becomes a new representative. The result is cached as
 ``_refs/motif_clusters.tsv`` (motif_id, family, representative_id) and consumed
 by Stage B's ``--collapse-clusters``.
 """
-import shutil
 import subprocess
-import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-_MEME_ENV_TOMTOM = "/home/zlab/miniconda3/envs/meme/bin/tomtom"
+from boltzscan.toolchain import resolve_executable
+
 _MEME_HEADER = (
     "MEME version 5\n\nALPHABET= ACGT\n\nstrands: + -\n\n"
     "Background letter frequencies (from uniform background):\n"
@@ -37,7 +36,12 @@ class ClusterSummary:
 
 
 def resolve_tomtom(tomtom=None):
-    return tomtom or shutil.which("tomtom") or _MEME_ENV_TOMTOM
+    discovered = resolve_executable("tomtom", explicit=tomtom)
+    if discovered:
+        return discovered
+    raise FileNotFoundError(
+        "Tomtom not found; run `boltzscan doctor --fix --profile refs-builder`"
+    )
 
 
 def build_motif_meta(ref_index_tsv):

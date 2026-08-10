@@ -2,12 +2,29 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pandas as pd
 from tqdm import tqdm
 
-from boltzscan.utils.utils import calc_ipsae, read_ipsae
+
+def calc_ipsae(cif_file, pae_file, ipsae_script=None):
+    if ipsae_script is None:
+        ipsae_script = Path(__file__).resolve().parent / 'ipsae.py'
+    cmd = [sys.executable, str(ipsae_script), str(pae_file), str(cif_file), '10', '10']
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        raise Exception(f"ipsae script execution failed: {e}") from e
+
+
+def read_ipsae(ipsae_file):
+    df = pd.read_csv(ipsae_file, skipinitialspace=True, sep=' ')
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
+    return df
 
 
 @dataclass
@@ -40,9 +57,11 @@ def score_ipsae_table(res_dir, score_file=None, output=None, id_col=None, force=
         force=force,
         processes=processes,
     )
+    if not prediction_names:
+        raise ValueError(f"No prediction structures found in {predictions_dir}")
     if score_file is None:
-        score_df = pd.DataFrame({'boltz_name': sorted(prediction_names)})
-        id_col = 'boltz_name'
+        score_df = pd.DataFrame({'model_id': sorted(prediction_names)})
+        id_col = 'model_id'
     else:
         score_df = _read_score_table(score_file)
         id_col = _select_id_col(score_df, prediction_names, id_col)
@@ -57,8 +76,20 @@ def score_ipsae_table(res_dir, score_file=None, output=None, id_col=None, force=
     score_df['boltz_iptm_asym_min'] = ids.map(lambda name: scores.get(name, {}).get('boltz_iptm_asym_min'))
     score_df['ipsae_iptm_asym_min'] = ids.map(lambda name: scores.get(name, {}).get('ipsae_iptm_asym_min'))
     score_df['pDockQ'] = ids.map(lambda name: scores.get(name, {}).get('pDockQ'))
-    score_df['TF'] = ids.map(_parse_tf)
-    score_df['TG'] = ids.map(_parse_tg)
+    # Model-input IDs are opaque hashes in the run-level workflow.  Preserve
+    # the biological identifiers from the score table when available instead
+    # of trying to parse a TF/target gene from the reusable model ID.
+    if score_file is not None:
+        if 'tf_name' in score_df.columns:
+            score_df['TF'] = score_df['tf_name']
+        elif 'TF' not in score_df.columns:
+            score_df['TF'] = ids.map(_parse_tf)
+        if 'sequence_name' in score_df.columns:
+            score_df['TG'] = score_df['sequence_name']
+        elif id_col == 'model_id':
+            score_df['TG'] = None
+        elif 'TG' not in score_df.columns:
+            score_df['TG'] = ids.map(_parse_tg)
     score_df = score_df.sort_values('ipsae', ascending=False, na_position='last')
     score_df = _round_score_columns(score_df)
 
@@ -66,11 +97,11 @@ def score_ipsae_table(res_dir, score_file=None, output=None, id_col=None, force=
     if matched_predictions == 0:
         raise ValueError(
             f"No rows in {score_file} matched prediction directories in {predictions_dir}. "
-            "Use -i/--id-col to choose the Boltz result name column."
+            "The table must contain IDs matching the prediction directory names."
         )
 
     if output is None:
-        output = predictions_dir.parent / 'ipsae_scored.csv'
+        output = predictions_dir / 'ipsae_scored.csv'
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     score_df.to_csv(output, index=False)
@@ -134,7 +165,18 @@ def _resolve_predictions_dir(res_dir):
     res_dir = Path(res_dir)
     if not res_dir.exists():
         raise FileNotFoundError(f"Result directory not found: {res_dir}")
+    if any(res_dir.glob('*.cif')):
+        return res_dir
     if res_dir.name == 'predictions':
+        return res_dir
+    # The concise run workflow keeps each arm directly under
+    # ``predictions/full`` or ``predictions/crop<N>``.  Treat a directory of
+    # per-model folders as a predictions root without requiring an extra,
+    # confusing ``predictions/predictions`` layer.
+    if any(
+        child.is_dir() and any(child.glob('*.cif'))
+        for child in res_dir.iterdir()
+    ):
         return res_dir
     predictions_dir = res_dir / 'predictions'
     if predictions_dir.is_dir():
@@ -147,13 +189,23 @@ def _resolve_predictions_dir(res_dir):
 
 def _collect_ipsae_scores(predictions_dir, force=False, processes=1):
     prediction_dirs = sorted(p for p in predictions_dir.iterdir() if p.is_dir())
+    flat_cifs = sorted(p for p in predictions_dir.glob('*.cif') if p.is_file())
     scores = {}
     warnings = []
     processes = max(1, int(processes))
 
+    if flat_cifs:
+        jobs = flat_cifs
+        score_one = _score_flat_prediction
+        prediction_names = {path.stem for path in flat_cifs}
+    else:
+        jobs = prediction_dirs
+        score_one = _score_prediction_dir
+        prediction_names = {path.name for path in prediction_dirs}
+
     if processes == 1:
-        results = (_score_prediction_dir(pred_dir, force) for pred_dir in prediction_dirs)
-        iterator = tqdm(results, total=len(prediction_dirs), desc='calc_ipsae')
+        results = (score_one(job, force) for job in jobs)
+        iterator = tqdm(results, total=len(jobs), desc='calc_ipsae')
         for pred_name, metrics, pred_warnings in iterator:
             warnings.extend(pred_warnings)
             if metrics is not None:
@@ -161,8 +213,8 @@ def _collect_ipsae_scores(predictions_dir, force=False, processes=1):
     else:
         with ThreadPoolExecutor(max_workers=processes) as executor:
             futures = {
-                executor.submit(_score_prediction_dir, pred_dir, force): pred_dir
-                for pred_dir in prediction_dirs
+                executor.submit(score_one, job, force): job
+                for job in jobs
             }
             iterator = tqdm(as_completed(futures), total=len(futures), desc='calc_ipsae')
             for future in iterator:
@@ -171,7 +223,7 @@ def _collect_ipsae_scores(predictions_dir, force=False, processes=1):
                 if metrics is not None:
                     scores[pred_name] = metrics
 
-    return scores, warnings, {p.name for p in prediction_dirs}
+    return scores, warnings, prediction_names
 
 
 def _collect_validation_rows(predictions_dir, tolerance, force=False, processes=1):
@@ -212,20 +264,56 @@ def _collect_validation_rows(predictions_dir, tolerance, force=False, processes=
 
 def _score_prediction_dir(pred_dir, force):
     warnings = []
-    ipsae_file, warnings = _ensure_ipsae_file(pred_dir, force=force)
+    cif_file, cif_warning = _select_prediction_file(pred_dir, '*.cif')
+    pae_file, pae_warning = _select_prediction_file(pred_dir, 'pae*')
+    json_file, json_warning = _select_prediction_file(pred_dir, 'confidence*.json')
+    for warning in (cif_warning, pae_warning, json_warning):
+        if warning:
+            warnings.append(f"{pred_dir.name}: {warning}")
+    return _score_prediction_files(
+        pred_dir.name,
+        cif_file,
+        pae_file,
+        json_file,
+        force,
+        warnings,
+    )
+
+
+def _score_flat_prediction(cif_file, force):
+    name = cif_file.stem
+    pred_dir = cif_file.parent
+    warnings = []
+    pae_file = pred_dir / f'pae_{name}.npz'
+    if not pae_file.exists():
+        pae_file = pred_dir / f'pae_{name}.json'
+    if not pae_file.exists():
+        warnings.append(f"{name}: missing pae_{name}.npz or pae_{name}.json")
+        pae_file = None
+    json_file = pred_dir / f'confidence_{name}.json'
+    if not json_file.exists():
+        json_file = None
+    return _score_prediction_files(name, cif_file, pae_file, json_file, force, warnings)
+
+
+def _score_prediction_files(name, cif_file, pae_file, json_file, force, warnings):
+    ipsae_file, warnings = _ensure_ipsae_files(
+        name,
+        cif_file,
+        pae_file,
+        force=force,
+        warnings=warnings,
+    )
     if ipsae_file is None:
-        return pred_dir.name, None, warnings
+        return name, None, warnings
 
     try:
         metrics = _read_ipsae_metrics(ipsae_file)
-        json_file, json_warning = _select_prediction_file(pred_dir, 'confidence*.json')
-        if json_warning:
-            warnings.append(f"{pred_dir.name}: {json_warning}")
         if json_file is not None:
             try:
                 metrics.update(_read_boltz_iptm_metrics(json_file))
             except Exception as exc:
-                warnings.append(f"{pred_dir.name}: could not read Boltz iptm: {exc}")
+                warnings.append(f"{name}: could not read Boltz iptm: {exc}")
                 metrics['boltz_iptm'] = None
                 metrics['boltz_iptm_global'] = None
                 metrics['boltz_iptm_asym_min'] = None
@@ -233,10 +321,10 @@ def _score_prediction_dir(pred_dir, force):
             metrics['boltz_iptm'] = None
             metrics['boltz_iptm_global'] = None
             metrics['boltz_iptm_asym_min'] = None
-        return pred_dir.name, metrics, warnings
+        return name, metrics, warnings
     except Exception as exc:
-        warnings.append(f"{pred_dir.name}: could not read IPSAE metrics: {exc}")
-        return pred_dir.name, None, warnings
+        warnings.append(f"{name}: could not read IPSAE metrics: {exc}")
+        return name, None, warnings
 
 
 def _validate_prediction_dir(pred_dir, tolerance, force):
@@ -287,6 +375,16 @@ def _ensure_ipsae_file(pred_dir, force=False):
         warnings.append(f"{pred_dir.name}: {cif_warning}")
     if pae_warning:
         warnings.append(f"{pred_dir.name}: {pae_warning}")
+    return _ensure_ipsae_files(
+        pred_dir.name,
+        cif_file,
+        pae_file,
+        force=force,
+        warnings=warnings,
+    )
+
+
+def _ensure_ipsae_files(name, cif_file, pae_file, force, warnings):
     if cif_file is None or pae_file is None:
         return None, warnings
 
@@ -295,13 +393,13 @@ def _ensure_ipsae_file(pred_dir, force=False):
         try:
             calc_ipsae(cif_file=cif_file, pae_file=pae_file)
         except Exception as exc:
-            warnings.append(f"{pred_dir.name}: IPSAE calculation failed: {exc}")
+            warnings.append(f"{name}: IPSAE calculation failed: {exc}")
             return None, warnings
 
     if not ipsae_file.exists():
-        ipsae_file = _find_existing_ipsae_file(pred_dir)
+        ipsae_file = _find_existing_ipsae_file(cif_file.parent)
     if ipsae_file is None:
-        warnings.append(f"{pred_dir.name}: IPSAE output txt not found")
+        warnings.append(f"{name}: IPSAE output txt not found")
         return None, warnings
 
     return ipsae_file, warnings
@@ -507,7 +605,7 @@ def _select_id_col(score_df, prediction_names, id_col=None):
         return id_col
 
     prediction_names = set(prediction_names)
-    preferred = ['boltz_name', 'name', 'id']
+    preferred = ['model_id', 'boltz_name', 'name', 'id']
     candidates = [c for c in preferred if c in score_df.columns]
     candidates.extend(score_df.columns)
 
@@ -524,7 +622,9 @@ def _select_id_col(score_df, prediction_names, id_col=None):
             best_overlap = overlap
 
     if best_col is None or best_overlap <= 0:
-        raise ValueError("Could not infer the Boltz result name column; pass -i/--id-col.")
+        raise ValueError(
+            "Could not infer the prediction ID column; the table should contain model_id."
+        )
     return best_col
 
 

@@ -1,11 +1,11 @@
 """blastp-based DBD %ID: fast all-vs-all with domain-level, coverage-gated identity."""
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-_SWT = "/home/zlab/miniconda3/envs/swt/bin"
+from boltzscan.toolchain import resolve_executable
+
 OUTFMT = "6 qseqid sseqid pident length nident qlen slen"
 
 
@@ -19,8 +19,12 @@ class Hit:
 
 
 def resolve_blast_bins(blastp=None, makeblastdb=None):
-    bp = blastp or shutil.which("blastp") or f"{_SWT}/blastp"
-    mk = makeblastdb or shutil.which("makeblastdb") or f"{_SWT}/makeblastdb"
+    bp = resolve_executable("blastp", explicit=blastp)
+    mk = resolve_executable("makeblastdb", explicit=makeblastdb)
+    if not bp or not mk:
+        raise FileNotFoundError(
+            "BLAST+ executables not found; run `boltzscan doctor --fix`"
+        )
     return bp, mk
 
 

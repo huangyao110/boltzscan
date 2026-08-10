@@ -12,6 +12,7 @@ from Bio import SeqIO
 
 from boltzscan.utils.find_tf import DBD_ACCS
 from boltzscan.pwmmap.thresholds import family_for_pfam
+from boltzscan.toolchain import resolve_executable
 
 DEFAULT_PFAM = str(Path(__file__).resolve().parents[2] / "data" / "pfam" / "Pfam-A.hmm")
 
@@ -45,9 +46,42 @@ def parse_domtbl_dbds(domtbl_path):
     return out
 
 
+def dbd_crop_interval(records, tf_id, protein_length, flank):
+    """Return the 1-based inclusive union-of-DBDs crop interval for one TF.
+
+    ``records`` may be the complete output of :func:`parse_domtbl_dbds` or a
+    pre-filtered subset.  A crop is meaningful only when a DNA-binding-domain
+    hit exists, so absence of a hit is an error rather than a silent full-length
+    fallback.  Multiple DBDs are represented by their bounding union.
+    """
+    if protein_length <= 0:
+        raise ValueError(f"Protein length must be positive for {tf_id!r}")
+    if flank < 0:
+        raise ValueError("Crop flank must be non-negative")
+    hits = [record for record in records if record[0] == tf_id]
+    if not hits:
+        raise ValueError(f"No DNA-binding-domain Pfam hit found for {tf_id!r}")
+
+    dbd_start = min(int(record[2]) for record in hits)
+    dbd_stop = max(int(record[3]) for record in hits)
+    if dbd_stop < 1 or dbd_start > protein_length:
+        raise ValueError(
+            f"DBD coordinates {dbd_start}-{dbd_stop} for {tf_id!r} do not overlap "
+            f"its protein length ({protein_length})"
+        )
+    dbd_start = max(1, dbd_start)
+    dbd_stop = min(protein_length, dbd_stop)
+    return max(1, dbd_start - flank), min(protein_length, dbd_stop + flank)
+
+
 def _run_hmmsearch(proteins, pfam, domtbl, cpu):
     domtbl.parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["hmmsearch", "--cut_ga", "--cpu", str(cpu),
+    hmmsearch = resolve_executable("hmmsearch")
+    if hmmsearch is None:
+        raise FileNotFoundError(
+            "HMMER hmmsearch not found; run `boltzscan doctor --fix`"
+        )
+    cmd = [hmmsearch, "--cut_ga", "--cpu", str(cpu),
            "--domtblout", str(domtbl), "-o", "/dev/null", str(pfam), str(proteins)]
     print("[dbd] " + " ".join(cmd), file=sys.stderr)
     subprocess.run(cmd, check=True)

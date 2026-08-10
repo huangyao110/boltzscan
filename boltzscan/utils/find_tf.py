@@ -25,12 +25,13 @@ boltzscan env. Usage:
       --pfam data/pfam/Pfam-A.hmm \
       --out-dir "tasks/zyf/野菊基因组信息/tf_out" --cpu 8
 """
-import argparse
 import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from boltzscan.toolchain import resolve_executable
 
 from Bio import SeqIO
 
@@ -165,8 +166,13 @@ def run_hmmsearch(proteins, pfam, domtbl, cpu, force):
         print(f"[hmmsearch] reuse existing {domtbl}", file=sys.stderr)
         return
     domtbl.parent.mkdir(parents=True, exist_ok=True)
+    hmmsearch = resolve_executable("hmmsearch")
+    if hmmsearch is None:
+        raise FileNotFoundError(
+            "HMMER hmmsearch not found; run `boltzscan doctor --fix`"
+        )
     cmd = [
-        "hmmsearch", "--cut_ga", "--cpu", str(cpu),
+        hmmsearch, "--cut_ga", "--cpu", str(cpu),
         "--domtblout", str(domtbl), "-o", "/dev/null",
         str(pfam), str(proteins),
     ]
@@ -248,6 +254,13 @@ def find_transcription_factors(proteins, out_dir, pfam=DEFAULT_PFAM,
         print(f"[hmmsearch] reuse existing {domtbl}", file=sys.stderr)
 
     per_prot, names = parse_domtbl(domtbl)
+    protein_ids = {
+        rec.id for rec in SeqIO.parse(str(proteins), "fasta")
+    }
+    per_prot = {
+        prot: counts for prot, counts in per_prot.items()
+        if prot in protein_ids
+    }
 
     tf_rows = []          # (gene_id, family, dbd_pfam, dbd_name, dbd_score, evidence)
     fam_count = defaultdict(int)
@@ -307,26 +320,3 @@ def print_report(summary):
     print("\n[find_tf] per-family counts:", file=sys.stderr)
     for fam in sorted(summary.family_counts, key=lambda k: -summary.family_counts[k]):
         print(f"  {fam:14} {summary.family_counts[fam]}", file=sys.stderr)
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--proteins", required=True, help="protein FASTA")
-    ap.add_argument("--pfam", default=DEFAULT_PFAM,
-                    help=f"hmmpress-ed Pfam-A.hmm (default: {DEFAULT_PFAM})")
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--cpu", type=int, default=8)
-    ap.add_argument("--force", action="store_true", help="re-run hmmsearch even if domtbl exists")
-    ap.add_argument("--domtbl", help="use this existing domtblout instead of running hmmsearch")
-    args = ap.parse_args()
-
-    summary = find_transcription_factors(
-        proteins=args.proteins, out_dir=args.out_dir, pfam=args.pfam,
-        cpu=args.cpu, force=args.force, domtbl=args.domtbl,
-    )
-    print_report(summary)
-
-
-if __name__ == "__main__":
-    main()

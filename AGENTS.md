@@ -2,15 +2,15 @@
 
 ## Project Structure & Module Organization
 
-BoltzScan is an installable Python package for GRN inference workflows. Core source lives in `boltzscan/`: `cli.py` defines the console entry point, `fimocistarget/` handles promoter extraction and FIMO/cisTarget-style motif scoring, `cropd2p/` prepares protein-DNA Boltz inputs, and `utils/` contains shared path, IPSAE, and FIMO-to-Boltz helpers. `bscan.py` is a compatibility shim for `python bscan.py <cmd>`. Notebooks such as `boltzscan.ipynb` and `tair_tf2pwm.ipynb` are exploratory workflows. `png/` stores README assets. Large local inputs and run outputs belong under ignored paths such as `data/`, `tasks/`, and `boltz_results_*/`.
+BoltzScan is an installable Python package for GRN inference workflows. Core source lives in `boltzscan/`: `cli.py` defines the console entry point, `tfdna.py` orchestrates the production workflow, `fimocistarget/` handles promoter extraction and FIMO scanning, `msa.py` handles remote MSA generation and A3M cropping, and `utils/` contains shared IPSAE and FIMO-to-YAML helpers. `boltzscan/__main__.py` enables the standard `python -m boltzscan` entry point. `png/` stores README assets. Large local inputs and run outputs belong under ignored paths such as `data/`, `tasks/`, and `boltz_results_*/`.
 
 ## Build, Test, and Development Commands
 
-- `pip install -e .`: install the package and expose the `boltzscan` CLI.
-- `pip install -e .[cistarg]`: install optional FIMO/cisTarget dependencies.
+- `pip install -e .`: install the package and expose the `boltzscan` CLI; external FIMO is managed by `boltzscan doctor --fix`.
+- `boltzscan doctor`: inspect Python, external-tool, PWM-reference, and Pfam readiness.
 - `boltzscan --help` or `python -m boltzscan --help`: inspect available subcommands.
-- `python bscan.py promoter -gff <genes.gff3> -g <genome.fa> -o promoters.fasta`: extract promoter FASTA.
-- `python bscan.py cistarg -f <promoters.fa> -m <meme_dir> -t <tf2pwms.json> -o <out>`: build motif score outputs.
+- `boltzscan promoter -gff <genes.gff3> -g <genome.fa> -o promoters --format fasta`: extract promoter FASTA.
+- `boltzscan fimo-scan -f <promoters.fa> -m <meme_dir> -t <tf2pwms.json> --tf-fasta <tf.fa> -o <out>`: build motif scan outputs.
 - `python -m build`: build distributions when the `build` package is installed.
 
 Use Python 3.11 for local work; `pyproject.toml` allows Python `>=3.10,<3.13`.
@@ -29,4 +29,4 @@ Recent history uses short imperative or summary-style subjects, for example `Ref
 
 ## Security & Configuration Tips
 
-Do not commit large datasets, generated Boltz runs, archives, logs, or machine-specific outputs. Treat vendored external trees such as `boltzscan/boltz/` and `boltzscan/cropd2p/disopred/` as separate projects with their own dependencies and conventions.
+Do not commit large datasets, generated Boltz runs, archives, logs, or machine-specific outputs. The inference-only source trees under `boltzscan/boltz/` and `boltzscan/esm/` are vendored release content; keep their upstream licenses, avoid adding their tests/development assets, and run them only through their dedicated environments.

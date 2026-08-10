@@ -1,10 +1,11 @@
 from Bio import SeqIO
 from Bio.Seq import Seq
+from contextlib import ExitStack
+from pathlib import Path
 from typing import Dict, List, Generator, Any
 import sys
 import re
 import gzip
-import argparse
 
 
 def parse_gff3(file_path: str) -> Generator[List[Dict[str, Any]], None, None]:
@@ -129,52 +130,23 @@ def find_tss(gene_lst):
     return None
 
 
-def extract_bed_regions(gff_file, output_file, feature_type="gene", name_attribute="ID"):
+def extract_promoter_regions(args, output_format=None):
     """
-    从GFF文件中提取指定类型的特征并生成BED格式文件
-    
-    参数:
-        gff_file: GFF文件路径
-        output_file: 输出BED文件路径
-        feature_type: 要提取的特征类型，默认为"gene"
-        name_attribute: 用作BED文件第4列名称的属性，默认为"ID"
-    """
-    print(f"从GFF文件 {gff_file} 中提取 {feature_type} 特征到BED文件 {output_file}")
-    
-    try:
-        with open(output_file, 'w') as bed_file:
-            for gene_features in parse_gff3(gff_file):
-                for feature in gene_features:
-                    if feature['type'] == feature_type:
-                        # BED格式: chrom, chromStart, chromEnd, name, score, strand
-                        chrom = feature['seqid']
-                        start = feature['start'] - 1  # BED使用0-based坐标系统
-                        end = feature['end']
-                        name = feature['attributes'].get(name_attribute, f"{feature_type}_{start}_{end}")
-                        score = feature['score'] if feature['score'] is not None else 0
-                        strand = feature['strand']
-                        
-                        # 写入BED格式行
-                        bed_file.write(f"{chrom}\t{start}\t{end}\t{name}\t{score}\t{strand}\n")
-        
-        print(f"成功生成BED文件: {output_file}")
-    except Exception as e:
-        print(f"生成BED文件时出错: {type(e).__name__} - {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def extract_promoters_both(args):
-    """
-    从GFF文件中提取启动子区域并保存为BED和FASTA两种格式
+    从GFF文件中提取启动子区域，输出 BED、FASTA 或两者。
     
     参数:
         args: 包含必要参数的命名空间对象
             - gff: GFF文件路径
             - genome: 基因组FASTA文件路径
-            - output: 输出文件前缀，将生成.bed和.fasta两个文件
+            - output: 输出文件前缀
+            - format: bed、fasta 或 both
             - upstream: 上游区域长度
             - downstream: 下游区域长度
     """
+    output_format = output_format or getattr(args, 'format', 'both')
+    if output_format not in {'bed', 'fasta', 'both'}:
+        raise ValueError(f"Unsupported promoter output format: {output_format}")
+
     # --- Load Genome into Memory ---
     print(f"\n加载基因组文件 '{args.genome}' 到内存...")
     try:
@@ -191,16 +163,26 @@ def extract_promoters_both(args):
         sys.exit(1)
 
     # --- 准备输出文件 ---
-    bed_output = args.output + ".bed"
-    fasta_output = args.output + ".fasta"
+    # Accept either a clean prefix or a familiar .bed/.fa/.fasta filename.
+    output_path = Path(args.output)
+    output_prefix = (
+        output_path.with_suffix('')
+        if output_path.suffix.lower() in {'.bed', '.fa', '.fasta'}
+        else output_path
+    )
+    bed_output = str(output_prefix) + ".bed" if output_format in {'bed', 'both'} else None
+    fasta_output = str(output_prefix) + ".fasta" if output_format in {'fasta', 'both'} else None
     
-    print(f"\n处理GFF并提取启动子区域到: {bed_output} 和 {fasta_output}...")
+    outputs = [path for path in (bed_output, fasta_output) if path is not None]
+    print(f"\n处理GFF并提取启动子区域到: {', '.join(outputs)}...")
     success_count = 0
     error_count = 0
     gff_gene_groups_processed = 0
 
     try:
-        with open(bed_output, 'w') as bed_file, open(fasta_output, 'w') as fasta_file:
+        with ExitStack() as stack:
+            bed_file = stack.enter_context(open(bed_output, 'w')) if bed_output else None
+            fasta_file = stack.enter_context(open(fasta_output, 'w')) if fasta_output else None
             # 遍历由解析器生成的基因特征列表
             for gene_feature_list in parse_gff3(args.gff):
                 gff_gene_groups_processed += 1
@@ -286,14 +268,16 @@ def extract_promoters_both(args):
                     bed_start = promoter_start - 1
                     name = f"{gene_id}_promoter"
                     score = 1000  # 默认分数
-                    bed_file.write(f"{chrom}\t{bed_start}\t{promoter_end}\t{name}\t{score}\t{strand}\n")
+                    if bed_file is not None:
+                        bed_file.write(f"{chrom}\t{bed_start}\t{promoter_end}\t{name}\t{score}\t{strand}\n")
                     
                     # --- 写入FASTA文件 ---
                     # 清理gene_id用于FASTA标题（替换空格等）- 可选
-                    safe_gene_id = re.sub(r'\s+', '_', str(gene_id)) # 基本清理
-                    fasta_file.write(f">{safe_gene_id} promoter_cds_anchor {chrom}:{promoter_start}-{promoter_end}({strand}) anchor:{tss_anchor}\n")
-                    for i in range(0, len(promoter_seq_final_case), 60):
-                        fasta_file.write(promoter_seq_final_case[i:i+60] + "\n")
+                    if fasta_file is not None:
+                        safe_gene_id = re.sub(r'\s+', '_', str(gene_id)) # 基本清理
+                        fasta_file.write(f">{safe_gene_id} promoter_cds_anchor {chrom}:{promoter_start}-{promoter_end}({strand}) anchor:{tss_anchor}\n")
+                        for i in range(0, len(promoter_seq_final_case), 60):
+                            fasta_file.write(promoter_seq_final_case[i:i+60] + "\n")
                     
                     success_count += 1
 
@@ -310,183 +294,9 @@ def extract_promoters_both(args):
         # 如果文件写入中途失败，无法准确报告计数
 
     print(f"\n处理了 {gff_gene_groups_processed} 个GFF基因组。")
-    print(f"成功将 {success_count} 个启动子区域写入BED文件: {bed_output}")
-    print(f"成功将 {success_count} 个启动子序列写入FASTA文件: {fasta_output}")
+    if bed_output:
+        print(f"成功将 {success_count} 个启动子区域写入BED文件: {bed_output}")
+    if fasta_output:
+        print(f"成功将 {success_count} 个启动子序列写入FASTA文件: {fasta_output}")
     if error_count > 0:
          print(f"遇到 {error_count} 个错误/警告 (跳过的基因)。")
-
-
-def extract_promoters(args):
-    # --- Load Genome into Memory ---
-    print(f"\nLoading genome file '{args.genome}' into memory...")
-    try:
-        genome_dict = SeqIO.to_dict(SeqIO.parse(args.genome, "fasta"))
-        print(f"Loaded {len(genome_dict)} sequences from genome file.")
-        if not genome_dict:
-             print("Error: No sequences loaded from the genome file.", file=sys.stderr)
-             sys.exit(1)
-    except FileNotFoundError:
-        print(f"Error: Genome file not found at '{args.genome}'", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading genome file '{args.genome}': {type(e).__name__} - {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # --- Process GFF and Extract Promoters Gene by Gene ---
-    print(f"\nProcessing GFF and extracting promoters to: {args.output}...")
-    success_count = 0
-    error_count = 0
-    gff_gene_groups_processed = 0
-
-    try:
-        with open(args.output, 'w') as outfile:
-            # Iterate through gene feature lists yielded by the parser
-            for gene_feature_list in parse_gff3(args.gff):
-                gff_gene_groups_processed += 1
-                if not gene_feature_list: continue # Skip empty groups
-
-                # Find the anchor point (TSS proxy) using your function
-                tss_info = find_tss(gene_feature_list)
-
-                if tss_info is None:
-                    error_count += 1
-                    continue # Skip if TSS anchor couldn't be determined
-
-                gene_id, chrom, tss_anchor, strand = tss_info
-
-                # --- Core Extraction Logic (adapted from previous function) ---
-                if chrom not in genome_dict:
-                    print(f"Warning: Chromosome '{chrom}' for gene '{gene_id}' not found in genome. Skipping.", file=sys.stderr)
-                    error_count += 1
-                    continue
-                if tss_anchor is None:
-                    print(f"Warning: gene '{gene_id}' not found tts. Skipping.", file=sys.stderr)
-                    error_count += 1
-                    continue
-
-                genome_seq_record = genome_dict[chrom]
-                chrom_len = len(genome_seq_record.seq)
-                promoter_seq_final_case = None
-                promoter_start, promoter_end = 0, 0
-                split_index_in_extracted = -1
-
-                # --- Coordinate Calculation (1-based) using tss_anchor ---
-                if strand == '+':
-                    # tss_anchor is min(cds_starts)
-                    promoter_start = max(1, tss_anchor - args.upstream)
-                    promoter_end = min(chrom_len, tss_anchor + args.downstream - 1)
-                    if promoter_start > promoter_end: promoter_end = promoter_start
-                    split_index_in_extracted = max(0, tss_anchor - promoter_start)
-
-                elif strand == '-':
-                    # tss_anchor is max(cds_ends)
-                    promoter_start = max(1, tss_anchor - args.downstream + 1) # Downstream biological region has lower coordinates
-                    promoter_end = min(chrom_len, tss_anchor + args.upstream)    # Upstream biological region has higher coordinates
-                    if promoter_start > promoter_end: promoter_start = promoter_end
-                    # Split index calculation remains the same conceptually after reverse complement
-                    split_index_in_extracted = max(0, promoter_end - tss_anchor)
-                else:
-                     # Should have been caught by find_tss, but double check
-                    error_count += 1
-                    print('stand errotr')
-                    continue
-
-                # --- Sequence Extraction (0-based slicing) ---
-                try:
-                    seq_0_start = promoter_start - 1
-                    seq_0_end = promoter_end
-
-                    if seq_0_start < 0 or seq_0_end > chrom_len or seq_0_start >= seq_0_end:
-                        raise IndexError(f"Invalid slice coords [{seq_0_start}:{seq_0_end}] for chrom len {chrom_len}")
-
-                    promoter_seq_slice = genome_seq_record.seq[seq_0_start:seq_0_end]
-                    extracted_seq = str(promoter_seq_slice)
-
-                    if not extracted_seq:
-                        error_count += 1
-                        continue
-
-                    # --- Handle Strand and Case ---
-                    if strand == '-':
-                        extracted_seq = str(Seq(extracted_seq).reverse_complement())
-
-                    len_extracted = len(extracted_seq)
-                    if split_index_in_extracted >= len_extracted:
-                         promoter_seq_final_case = extracted_seq.lower()
-                    elif split_index_in_extracted <= 0:
-                         promoter_seq_final_case = extracted_seq.upper()
-                    else:
-                         upstream_part = extracted_seq[:split_index_in_extracted].upper()
-                         downstream_part = extracted_seq[split_index_in_extracted:].lower()
-                         promoter_seq_final_case = upstream_part + downstream_part
-
-                    # --- Write to single file ---
-                    # Clean up gene_id for FASTA header (replace spaces, etc.) - Optional
-                    safe_gene_id = re.sub(r'\s+', '_', str(gene_id)) # Basic cleaning
-                    outfile.write(f">{safe_gene_id} promoter_cds_anchor {chrom}:{promoter_start}-{promoter_end}({strand}) anchor:{tss_anchor}\n")
-                    for i in range(0, len(promoter_seq_final_case), 60):
-                        outfile.write(promoter_seq_final_case[i:i+60] + "\n")
-                    success_count += 1
-
-                except IndexError as e:
-                    print(f"Error slicing sequence for gene '{gene_id}' ({chrom}:{promoter_start}-{promoter_end}): {e}. Skipping.", file=sys.stderr)
-                    error_count += 1
-                except Exception as e:
-                    print(f"Unexpected error processing promoter for '{gene_id}': {type(e).__name__} - {e}", file=sys.stderr)
-                    error_count += 1
-                # --- End Core Extraction Logic ---
-
-    except IOError as e:
-        print(f"Error: Could not write to output file '{args.output}': {e}", file=sys.stderr)
-        # No good way to report counts accurately if file writing fails mid-way
-
-    print(f"\nProcessed {gff_gene_groups_processed} gene groups from GFF.")
-    print(f"Successfully wrote {success_count} promoter sequences to: {args.output}")
-    if error_count > 0:
-         print(f"Encountered {error_count} errors/warnings (genes skipped).")
-
-
-def main():
-    """
-    主函数，解析命令行参数并执行相应操作
-    """
-    parser = argparse.ArgumentParser(description='基因组区域处理工具')
-    subparsers = parser.add_subparsers(dest='command', help='可用命令')
-    
-    # 添加BED提取子命令
-    bed_parser = subparsers.add_parser('extract-bed', help='从GFF文件提取区域并生成BED文件')
-    bed_parser.add_argument('-i', '--input', required=True, help='输入GFF文件路径')
-    bed_parser.add_argument('-o', '--output', required=True, help='输出BED文件路径')
-    bed_parser.add_argument('-t', '--type', default='gene', help='要提取的特征类型 (默认: gene)')
-    bed_parser.add_argument('-n', '--name', default='ID', help='用作名称的属性字段 (默认: ID)')
-    
-    # 添加启动子提取子命令
-    promoter_parser = subparsers.add_parser('extract-promoters', help='提取启动子序列')
-    promoter_parser.add_argument('-g', '--gff', required=True, help='GFF文件路径')
-    promoter_parser.add_argument('--genome', required=True, help='基因组FASTA文件路径')
-    promoter_parser.add_argument('-o', '--output', required=True, help='输出FASTA文件路径')
-    promoter_parser.add_argument('-u', '--upstream', type=int, default=2000, help='上游区域长度 (默认: 2000)')
-    promoter_parser.add_argument('-d', '--downstream', type=int, default=200, help='下游区域长度 (默认: 200)')
-    
-    # 添加启动子BED和FASTA同时提取子命令
-    both_parser = subparsers.add_parser('extract-promoters-both', help='同时提取启动子序列的BED文件和FASTA文件')
-    both_parser.add_argument('-g', '--gff', required=True, help='GFF文件路径')
-    both_parser.add_argument('--genome', required=True, help='基因组FASTA文件路径')
-    both_parser.add_argument('-o', '--output', required=True, help='输出文件前缀，将生成.bed和.fasta两个文件')
-    both_parser.add_argument('-u', '--upstream', type=int, default=2000, help='上游区域长度 (默认: 2000)')
-    both_parser.add_argument('-d', '--downstream', type=int, default=200, help='下游区域长度 (默认: 200)')
-    
-    args = parser.parse_args()
-    
-    if args.command == 'extract-bed':
-        extract_bed_regions(args.input, args.output, args.type, args.name)
-    elif args.command == 'extract-promoters':
-        extract_promoters(args)
-    elif args.command == 'extract-promoters-both':
-        extract_promoters_both(args)
-    else:
-        parser.print_help()
-
-
-if __name__ == '__main__':
-    main()

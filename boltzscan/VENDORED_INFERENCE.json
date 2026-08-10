@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "boltz": {
+    "version": "2.2.1",
+    "revision": "cb04aeccdd480fd4db707f0bbafde538397fa2ac",
+    "upstream": "https://github.com/jwohlwend/boltz",
+    "source": "boltz/src/boltz",
+    "license": "boltz/LICENSE"
+  },
+  "esm": {
+    "version": "3.3.0",
+    "revision": "b6b0e8815dc3174a9fe9afd36b222aea57d536c5",
+    "upstream": "https://github.com/Biohub/esm",
+    "source": "esm/esm",
+    "license": "esm/LICENSE.md",
+    "patches": [
+      {
+        "file": "esm/esm/models/esmfold2/processor.py",
+        "scope": "When seed is explicit, enforce deterministic PyTorch/CUDA execution and restore caller state afterward"
+      }
+    ]
+  },
+  "ode_adapter": "predict/_boltz_worker.py"
+}

@@ -1,0 +1,18 @@
+include boltzscan/VENDORED_INFERENCE.json
+
+include boltzscan/boltz/LICENSE
+include boltzscan/boltz/README.md
+include boltzscan/boltz/pyproject.toml
+graft boltzscan/boltz/src/boltz
+
+include boltzscan/esm/LICENSE.md
+include boltzscan/esm/README.md
+include boltzscan/esm/pyproject.toml
+graft boltzscan/esm/esm
+prune boltzscan/esm/esm/widgets
+
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.nbc
+global-exclude *.nbi
+global-exclude *_test.py

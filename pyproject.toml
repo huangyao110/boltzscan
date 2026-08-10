@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boltzscan"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GRN inference via structural modeling of TFs and their targets"
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
@@ -18,22 +18,52 @@ dependencies = [
     "requests>=2.28",
 ]
 
-[project.optional-dependencies]
-# Required by `boltzscan cistarg` and the post-FIMO `fimo2boltz` pipeline.
-cistarg = [
-    "pymemesuite>=0.1",
-    "scipy>=1.13",
-    "statsmodels>=0.14",
-    "matplotlib>=3.8",
-    "seaborn>=0.13",
-]
-
 [project.scripts]
 boltzscan = "boltzscan.cli:main"
 
+[tool.setuptools.dynamic]
+version = {attr = "boltzscan.__version__"}
+
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["boltzscan*"]
-# The `boltz/` and `esm/` subtrees are vendored, separately-installable
-# projects with their own pyproject.toml (and incompatible Python pins); do
-# not pick them up as subpackages of boltzscan.
-exclude = ["boltzscan.boltz*", "boltzscan.esm*"]
+# Preserve the vendored trees' on-disk layout in the wheel. At inference time
+# their actual source roots are placed first on PYTHONPATH, so they still load
+# as upstream top-level `boltz` and `esm` packages in their dedicated envs.
+exclude = [
+    "boltzscan.esm._assets*",
+    "boltzscan.esm.cookbook*",
+    "boltzscan.esm.tests*",
+    "boltzscan.esm.tools*",
+    "boltzscan.esm.esm.widgets*",
+]
+
+[tool.setuptools.package-data]
+boltzscan = [
+    "VENDORED_INFERENCE.json",
+    "boltz/LICENSE",
+    "boltz/README.md",
+    "boltz/pyproject.toml",
+    "boltz/src/boltz/*.py",
+    "boltz/src/boltz/**/*.py",
+    "esm/LICENSE.md",
+    "esm/README.md",
+    "esm/pyproject.toml",
+    "esm/esm/*.py",
+    "esm/esm/**/*.py",
+    "esm/esm/data/*",
+]
+
+[tool.setuptools.exclude-package-data]
+boltzscan = [
+    "esm/esm/**/*_test.py",
+    "esm/esm/widgets/**/*.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: requires network access or an external executable",
+]
