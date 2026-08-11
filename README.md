@@ -44,6 +44,7 @@ conda activate boltzscan
 python -m pip install --upgrade pip
 python -m pip install -e .
 
+cd your_workdir
 boltzscan install-pwm-refs
 boltzscan doctor --fix
 boltzscan doctor
@@ -64,38 +65,41 @@ toolchain, then `PATH`.
 
 The repository contains the inference-only Boltz and ESM source trees, while
 the root `pyproject.toml` exposes their heavy third-party dependencies as the
-`boltz` and `esmfold2` extras. Install them in separate environments so each
-model keeps its tested Python/CUDA stack. The environment names below are the
-names BoltzScan discovers automatically:
+`boltz` and `esmfold2` extras. The simplest setup is to install the model or
+models you need directly into the active `boltzscan` environment:
 
 ```bash
-conda create -n boltz python=3.11 -y
-conda activate boltz
-python -m pip install --upgrade pip
-python -m pip install -e "/path/to/boltzscan[boltz]"
-
-conda create -n esmfold2 python=3.12 -y
-conda activate esmfold2
-python -m pip install --upgrade pip
-python -m pip install -e "/path/to/boltzscan[esmfold2]"
-
 conda activate boltzscan
-boltzscan doctor
+
+# Install one runtime:
+python -m pip install -e '/path/to/boltzscan[boltz]'
+# or
+python -m pip install -e '/path/to/boltzscan[esmfold2]'
+
+# Install both runtimes:
+python -m pip install -e '/path/to/boltzscan[boltz,esmfold2]'
 ```
 
 If the machine requires a particular CUDA build, install the matching PyTorch
-wheel in each model environment before installing the extra; pip will retain it
+wheel in the environment before installing the extra; pip will retain it
 when it satisfies the declared version. The ESMFold2 extra installs Biohub's
 Transformers fork because the standard Transformers package does not contain
 the required ESMFold2 implementation. Git must therefore be available during
 that installation.
 
+Dependency isolation remains available when the two model stacks need different
+Python/CUDA environments. Install the corresponding extra in each environment,
+then explicitly tell BoltzScan which Python to launch:
+
+```bash
+export BOLTZSCAN_BOLTZ_PYTHON=/path/to/boltz-env/bin/python
+export BOLTZSCAN_ESMFOLD_PYTHON=/path/to/esmfold2-env/bin/python
+```
+
 The extras install code dependencies, not model checkpoints. On first use the
 model runtimes can resolve their checkpoints from the upstream cache. For
 offline or shared-storage deployments, configure the local weight directories
-as described below. If the model environments use different names or paths,
-set `BOLTZSCAN_BOLTZ_PYTHON` and `BOLTZSCAN_ESMFOLD_PYTHON` to their Python
-executables.
+as described below.
 
 `boltzscan install-pwm-refs` calls the system `wget` downloader from Python,
 downloads the built-in GitHub Release asset, verifies its fixed SHA256, and
@@ -128,14 +132,13 @@ missing, mapping/scanning stops with a command that fixes the problem. Use
 `--no-pwm-cluster` only when an unclustered experiment is intentional.
 
 Structure inference loads the vendored source trees at `boltzscan/boltz/src`
-and `boltzscan/esm`; both are included in the wheel. The sibling `boltz` and
-`esmfold2` Conda environments provide only their heavy dependencies, model
-weights, and CUDA runtime. Standard Boltz1/2 enter the pinned upstream CLI with
-native defaults. `boltz1_ode` and `boltz2_ode` are BoltzScan-owned adapters that
-inject ODE diffusion parameters into the corresponding base family because the
-upstream CLI does not provide these modes. Override the environment interpreters
-with `BOLTZSCAN_BOLTZ_PYTHON` or `BOLTZSCAN_ESMFOLD_PYTHON` when they are stored
-elsewhere.
+and `boltzscan/esm`; both are included in the wheel. Inference uses the current
+BoltzScan Python by default, so installing the selected extra in that environment
+is sufficient. Standard Boltz1/2 enter the pinned upstream CLI with native
+defaults. `boltz1_ode` and `boltz2_ode` are BoltzScan-owned adapters that inject
+ODE diffusion parameters into the corresponding base family because the
+upstream CLI does not provide these modes. Set `BOLTZSCAN_BOLTZ_PYTHON` or
+`BOLTZSCAN_ESMFOLD_PYTHON` only when using an isolated model environment.
 
 ESMFold2 and ESMC-6B weights may also live outside the Hugging Face cache. Set
 their directories before prediction; when the ESMFold2 directory contains

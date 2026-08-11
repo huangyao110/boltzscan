@@ -1,10 +1,8 @@
 """Run protein-DNA structure prediction by selecting one public model.
 
-Inference uses this repository's ``boltz/`` and ``esm/`` source trees. Separate
-Conda environments provide their heavy runtime dependencies and CUDA libraries:
-
-- boltz   -> ``boltz/src`` through the ``boltz`` environment
-- esmfold -> ``esm`` through the ``esmfold2`` environment
+Inference uses this repository's ``boltz/`` and ``esm/`` source trees. By
+default they run with the active BoltzScan Python; environment-variable
+overrides remain available when dependency isolation is needed.
 
 Each engine keeps its native output layout. The separate ``wash`` command can
 publish a method-named soft or hard view without altering these source trees.
@@ -12,6 +10,7 @@ publish a method-named soft or hard view without altering these source trees.
 Env paths are overridable via the BOLTZSCAN_* environment variables.
 """
 import csv
+import importlib.util
 import json
 import os
 import subprocess
@@ -28,19 +27,6 @@ _BOLTZ_WORKER = Path(__file__).resolve().parent / "_boltz_worker.py"
 _ESMFOLD_WORKER = Path(__file__).resolve().parent / "_esmfold_worker.py"
 
 
-def _sibling_conda_python(environment):
-    """Locate ENV/bin/python beside the currently active Conda environment."""
-    executable = Path(sys.executable)
-    if len(executable.parents) >= 3:
-        return str(executable.parents[2] / environment / "bin" / "python")
-    return environment
-
-
-DEFAULT_BOLTZ_PY = os.environ.get(
-    "BOLTZSCAN_BOLTZ_PYTHON", _sibling_conda_python("boltz"))
-DEFAULT_ESMFOLD_PY = os.environ.get(
-    "BOLTZSCAN_ESMFOLD_PYTHON", _sibling_conda_python("esmfold2"))
-
 PREDICTION_MODELS = (
     "esmfold2", "boltz1", "boltz2", "boltz1_ode", "boltz2_ode",
 )
@@ -52,6 +38,26 @@ _SEQUENCE_ALPHABETS = {
     "protein": frozenset("ARNDCEQGHILKMFPSTWYVXJBZOU"),
     "dna": frozenset("ACGTN"),
 }
+_RUNTIME_MODULES = {
+    "boltz": ("torch", "pytorch_lightning", "rdkit"),
+    "esmfold2": ("torch", "transformers", "biotite"),
+}
+
+
+def _runtime_python(explicit, env_var, runtime):
+    """Use an explicit interpreter, otherwise the active Python with its extra."""
+    configured = explicit or os.environ.get(env_var)
+    if configured:
+        return configured
+    missing = [name for name in _RUNTIME_MODULES[runtime]
+               if importlib.util.find_spec(name) is None]
+    if missing:
+        raise ModuleNotFoundError(
+            f"{runtime} inference dependencies are missing from {sys.executable}: "
+            f"{', '.join(missing)}. Install the `{runtime}` extra in this environment "
+            f"or set {env_var} to another Python interpreter."
+        )
+    return sys.executable
 
 
 def engine_for_model(model):
@@ -259,7 +265,9 @@ def run_boltz(input_dir, out_dir, model="boltz1_ode", seed=None, python_exe=None
         configuration_source = "boltz_native_default"
 
     preprocessing_threads = available_cpu_count()
-    py = python_exe or DEFAULT_BOLTZ_PY
+    py = _runtime_python(
+        python_exe, "BOLTZSCAN_BOLTZ_PYTHON", "boltz"
+    )
     env = _runtime_environment(py, _BOLTZ_SRC, "boltz", model)
     native_result_dir = Path(out_dir) / f"boltz_results_{Path(input_dir).stem}"
     _write_inference_parameters(
@@ -312,7 +320,9 @@ def run_boltz(input_dir, out_dir, model="boltz1_ode", seed=None, python_exe=None
 
 
 def run_esmfold(input_dir, out_dir, seed=None, python_exe=None):
-    py = python_exe or DEFAULT_ESMFOLD_PY
+    py = _runtime_python(
+        python_exe, "BOLTZSCAN_ESMFOLD_PYTHON", "esmfold2"
+    )
     env = _runtime_environment(py, _ESM_SRC, "esm", "esmfold2")
     esmfold2_weights = env.get("BOLTZSCAN_ESMFOLD2_WEIGHTS", "biohub/ESMFold2")
     esmc_weights = env.get("BOLTZSCAN_ESMC_WEIGHTS", "biohub/ESMC-6B")

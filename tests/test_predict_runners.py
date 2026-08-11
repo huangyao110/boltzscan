@@ -25,6 +25,38 @@ def _write_prediction_yaml(input_dir, *, protein='MPEPT', msa='empty', dna='ACGT
     return path
 
 
+@pytest.mark.parametrize(
+    ('runtime', 'env_var'),
+    [
+        ('boltz', 'BOLTZSCAN_BOLTZ_PYTHON'),
+        ('esmfold2', 'BOLTZSCAN_ESMFOLD_PYTHON'),
+    ],
+)
+def test_runtime_defaults_to_active_python_when_extra_is_installed(
+    monkeypatch, runtime, env_var
+):
+    monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setattr(runners.importlib.util, 'find_spec', lambda _name: object())
+
+    assert runners._runtime_python(None, env_var, runtime) == sys.executable
+
+
+def test_runtime_explicit_environment_overrides_active_python(monkeypatch):
+    monkeypatch.setenv('BOLTZSCAN_BOLTZ_PYTHON', '/opt/boltz/bin/python')
+
+    assert runners._runtime_python(
+        None, 'BOLTZSCAN_BOLTZ_PYTHON', 'boltz'
+    ) == '/opt/boltz/bin/python'
+
+
+def test_runtime_reports_the_missing_extra(monkeypatch):
+    monkeypatch.delenv('BOLTZSCAN_BOLTZ_PYTHON', raising=False)
+    monkeypatch.setattr(runners.importlib.util, 'find_spec', lambda _name: None)
+
+    with pytest.raises(ModuleNotFoundError, match=r'Install the `boltz` extra'):
+        runners._runtime_python(None, 'BOLTZSCAN_BOLTZ_PYTHON', 'boltz')
+
+
 def test_preflight_reports_esmfold_no_msa(tmp_path, capsys):
     input_dir = tmp_path / 'inputs'
     _write_prediction_yaml(input_dir)
